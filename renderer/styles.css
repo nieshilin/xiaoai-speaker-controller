@@ -454,6 +454,11 @@ li.empty {
 .qr-side p { margin: 0 0 10px; }
 
 /* ---------- 日志 ---------- */
+.views:has(#view-log.active) { display: flex; flex-direction: column; }
+#view-log.active { flex: 1; min-height: 0; }
+#view-log .card.grow { flex: 1; min-height: 0; }
+#view-log .log { max-height: none; min-height: 0; }
+
 .log {
   flex: 1;
   margin: 0;
@@ -506,7 +511,7 @@ li.empty {
   width: min(720px, 100%);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
-  padding: 22px;
+  padding: 22px 22px 26px;
   border-radius: 18px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -536,6 +541,9 @@ li.empty {
 .about-item span { font-size: 11px; color: var(--muted-2); }
 .about-item strong { font-size: 12.5px; font-weight: 600; }
 .about-item strong.path { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; word-break: break-all; }
+.about-item strong.link { color: var(--accent); cursor: pointer; width: fit-content; }
+.about-item strong.link:hover { text-decoration: underline; }
+.about-item strong.link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
 
 .update-box { padding: 14px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); }
 .update-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

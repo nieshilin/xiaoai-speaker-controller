@@ -118,6 +118,8 @@ function updateRepo() {
   return String(custom || process.env.UPDATE_REPO || DEFAULT_REPO).trim();
 }
 
+const AUTHOR_BLOG = 'https://www.xiaonie.me/';
+
 function updateApiBase() {
   return process.env.GITHUB_API_BASE || DEFAULT_API;
 }
@@ -129,8 +131,8 @@ function openTrusted(target) {
   } catch (_) {
     throw new Error('链接地址无效');
   }
-  const trusted = /(^|\.)(github\.com|githubusercontent\.com)$/i.test(parsed.hostname);
-  if (parsed.protocol !== 'https:' || !trusted) throw new Error('只允许打开 GitHub 链接');
+  const trusted = /(^|\.)(github\.com|githubusercontent\.com|xiaonie\.me)$/i.test(parsed.hostname);
+  if (parsed.protocol !== 'https:' || !trusted) throw new Error('只允许打开项目与作者的可信链接');
   return shell.openExternal(parsed.href);
 }
 
@@ -151,6 +153,7 @@ function appInfo() {
     repoUrl: `https://github.com/${updateRepo()}`,
     autoCheck: store ? store.get('autoCheckUpdate', true) !== false : true,
     mediaPort: (media && media.port) || 0,
+    mediaHost: media && media.port ? pickHost() : '',
     license: pkg.license || '',
     copyright: `© ${new Date().getFullYear()} nieshilin`,
   };
@@ -562,6 +565,8 @@ function registerIpc() {
   ipcMain.handle('app:info', () => appInfo());
 
   ipcMain.handle('app:openRepo', () => openTrusted(`https://github.com/${updateRepo()}`));
+
+  ipcMain.handle('app:openBlog', () => openTrusted(AUTHOR_BLOG));
 
   ipcMain.handle('update:state', () => ({
     ...appInfo(),

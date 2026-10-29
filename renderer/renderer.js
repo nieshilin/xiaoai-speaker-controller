@@ -19,7 +19,8 @@
     const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
     const row = document.createElement('div');
     if (cls) row.className = cls;
-    row.textContent = line;
+    const text = String(line);
+    row.textContent = /^\[\d{2}:\d{2}:\d{2}\]/.test(text) ? text : `[${new Date().toTimeString().slice(0, 8)}] ${text}`;
     box.appendChild(row);
     while (box.childElementCount > 600) box.removeChild(box.firstChild);
     if (atBottom) box.scrollTop = box.scrollHeight;
@@ -499,7 +500,9 @@
     $('#infoChrome').textContent = info.chrome;
     $('#infoNode').textContent = info.node;
     $('#infoSystem').textContent = `${info.osVersion} · ${info.arch}`;
-    $('#infoMedia').textContent = info.mediaPort ? `0.0.0.0:${info.mediaPort}` : '未启动';
+    $('#infoMedia').textContent = info.mediaPort
+      ? `http://${info.mediaHost || '127.0.0.1'}:${info.mediaPort}/`
+      : '未启动';
     $('#infoRepo').textContent = info.repo;
     $('#infoUserData').textContent = info.userData;
     $('#infoUserData').title = info.userData;
@@ -702,6 +705,13 @@
     $('#btnDownloadUpdate').onclick = downloadUpdate;
     $('#btnOpenRelease').onclick = () => api.openRelease();
     $('#btnOpenRepo').onclick = () => api.openRepo();
+    $('#infoBlog').onclick = () => api.openBlog();
+    $('#infoBlog').onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        api.openBlog();
+      }
+    };
     $('#btnCopyInfo').onclick = copyVersionInfo;
     $('#btnSaveUpdate').onclick = saveUpdateConfig;
     $('#autoCheck').onchange = () => api.saveUpdateConfig({ autoCheck: $('#autoCheck').checked });

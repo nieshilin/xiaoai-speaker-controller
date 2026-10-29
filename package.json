@@ -1,6 +1,6 @@
 {
   "name": "xiaomi-speaker-controller",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "description": "小爱音箱控制台（Windows · Electron）：云端 MiNA 控制 + 网易云/QQ 音乐在线播放 + 语音播报 + 本地推流 + 自动检查更新",
   "main": "main.js",
@@ -29,7 +29,7 @@
       "package.json"
     ],
     "directories": {
-      "output": "release"
+      "output": "release2"
     },
     "win": {
       "target": [
