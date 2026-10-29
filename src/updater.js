@@ -105,14 +105,14 @@ function request(target, { token = '', headers = {}, timeout = 15000, authHosts 
 }
 
 function describeError(status, body, repo) {
-  if (status === 404) return `仓库 ${repo} 不存在，或私有仓库缺少有效 Token`;
-  if (status === 401) return 'GitHub Token 无效或已过期';
+  if (status === 404) return `仓库 ${repo} 不存在或未公开，请检查仓库地址`;
+  if (status === 401) return 'GitHub 拒绝访问（401），请稍后重试';
   if (status === 403) {
     const text = String(body || '');
-    if (/rate limit/i.test(text)) return 'GitHub API 访问频率超限，请稍后再试或填写 Token';
-    return '无权访问该仓库（403），请确认 Token 权限';
+    if (/rate limit/i.test(text)) return 'GitHub 接口访问频率超限，请稍后再试';
+    return '无权访问该仓库（403）';
   }
-  if (status === 0) return '无法连接 GitHub';
+  if (status === 0) return '无法连接 GitHub，请检查网络';
   return `GitHub 返回 HTTP ${status}`;
 }
 

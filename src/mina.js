@@ -7,6 +7,7 @@ const { URL } = require('url');
 
 const ACCOUNT_BASE = 'https://account.xiaomi.com';
 const MINA_BASE = 'https://api2.mina.mi.com';
+const MINA_BASE_ALT = 'https://api.mina.mi.com';
 const JSON_PREFIX = '&&&START&&&';
 
 const UA_LOGIN =
@@ -320,14 +321,23 @@ class MiAccount {
 }
 
 class MinaService {
-  constructor(account, { minaBase = MINA_BASE, onLog } = {}) {
+  constructor(account, { minaBase = MINA_BASE, minaFallback = null, onLog } = {}) {
     this.account = account;
-    this.minaBase = minaBase;
+    const bases = Array.isArray(minaBase) ? minaBase : [minaBase];
+    this._bases = Array.from(new Set(bases.filter(Boolean)));
+    this.minaBase = this._bases[0];
+    if (minaFallback) this._bases = Array.from(new Set([...this._bases, minaFallback]));
     this.onLog = typeof onLog === 'function' ? onLog : () => {};
   }
 
   log(msg) {
     try { this.onLog(msg); } catch (_) { /* ignore */ }
+  }
+
+  _networkError(err) {
+    const text = `${(err && err.message) || err} ${(err && err.code) || ''}`;
+    if (/HTTP 4\d\d|接口鉴权|code=|登录态/.test(text)) return false;
+    return /socket|TLS|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|timeout|hang up|network/i.test(text);
   }
 
   async _mina(uri, data = null) {
@@ -338,7 +348,20 @@ class MinaService {
     } else {
       p += (uri.includes('?') ? '&' : '?') + 'requestId=' + requestId;
     }
-    return this.account.request('micoapi', this.minaBase + p, data, { 'User-Agent': UA_MINA });
+    let lastErr = null;
+    for (const base of this._bases) {
+      try {
+        const resp = await this.account.request('micoapi', base + p, data, { 'User-Agent': UA_MINA });
+        if (base !== this.minaBase) this.log(`已切换到 MiNA 端点 ${base}`);
+        this.minaBase = base;
+        return resp;
+      } catch (err) {
+        lastErr = err;
+        if (!this._networkError(err)) throw err;
+        this.log(`MiNA 端点 ${base.replace(/^https?:\/\//, '')} 连不上（${err.message}），尝试备用端点`);
+      }
+    }
+    throw lastErr || new Error('MiNA 请求失败');
   }
 
   async devices() {
@@ -352,11 +375,34 @@ class MinaService {
 
   async _ok(deviceId, method, p, message) {
     const resp = await this.ubus(deviceId, method, p, message);
+    const inner = resp && resp.data ? resp.data.code : undefined;
+    if (inner !== undefined && Number(inner) !== 0) {
+      throw new Error(`设备返回 code=${inner}（${method}）`);
+    }
     return Number(resp.code) === 0;
   }
 
-  textToSpeech(deviceId, text) {
-    return this._ok(deviceId, 'text_to_speech', 'mibrain', { text });
+  async textToSpeech(deviceId, text) {
+    const trail = [];
+    const variants = [
+      ['text_to_speech', 'mibrain', { text }],
+      ['player_play_tts', 'mediaplayer', { text }],
+    ];
+    for (const [method, p, message] of variants) {
+      try {
+        const resp = await this.ubus(deviceId, method, p, message);
+        const inner = resp && resp.data ? resp.data.code : undefined;
+        trail.push(`${method}:${resp && resp.code}/${inner}`);
+        if (Number(resp.code) === 0 && (inner === undefined || Number(inner) === 0)) {
+          return { ok: true, method };
+        }
+      } catch (err) {
+        trail.push(`${method}:${err.message}`);
+      }
+    }
+    const err = new Error(`设备未接受云端 TTS（${trail.join(' ')}）`);
+    err.trail = trail;
+    throw err;
   }
 
   setVolume(deviceId, volume) {
@@ -419,4 +465,5 @@ module.exports = {
   parseResp,
   ACCOUNT_BASE,
   MINA_BASE,
+  MINA_BASE_ALT,
 };

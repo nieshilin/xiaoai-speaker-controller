@@ -88,7 +88,7 @@ module.exports = function runE2E(win, app) {
         document.getElementById('btnTts').click();
         return true;
       })()`);
-      const ttsOk = await until(`document.getElementById('log').textContent.includes('云端指令 tts')`);
+      const ttsOk = await until(`document.getElementById('log').textContent.includes('语音播报')`);
       add('播报按钮 → 下发 TTS', ttsOk);
 
       await js(`document.getElementById('btnStatus').click(); true`);

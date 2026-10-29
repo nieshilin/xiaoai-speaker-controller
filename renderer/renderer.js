@@ -116,6 +116,8 @@
     if (!r) return;
     state.connected = true;
     lockControls(false);
+    $('#nowDevice').textContent = r.name || opt.dataset.name || '小爱音箱';
+    $('#nowDeviceSub').textContent = `${opt.dataset.hardware || '未知型号'} · ${opt.value}`;
     setStatus('on', `已连接 · ${r.name}`);
     toast(`已连接 ${r.name}`, 'ok');
   }
@@ -227,6 +229,7 @@
     if (!state.connected) { toast('先扫码登录并选择音箱', 'err'); return; }
     state.playingSong = song;
     toast(`正在播放：${song.name}`);
+    $('#playerTag').textContent = `播放中 · ${song.name}`;
     const r = await run('播放', () => api.playSong({ id: song.id, name: `${song.name} - ${song.artists}`, provider: state.provider }));
     if (r && r.trial) toast('这是试听片段，填 Cookie 可播完整版', 'err');
   }
@@ -281,6 +284,7 @@
   async function onVolumeInput() {
     const v = Number($('#volume').value);
     $('#volumeVal').textContent = String(v);
+    paintRange();
     if (!state.connected) return;
     clearTimeout(volumeTimer);
     volumeTimer = setTimeout(() => {
@@ -362,6 +366,70 @@
 
   const about = { info: null, result: null, checking: false };
 
+  function showView(name) {
+    for (const btn of document.querySelectorAll('.rail-btn[data-view]')) {
+      const on = btn.dataset.view === name;
+      btn.classList.toggle('active', on);
+      if (on) {
+        $('#viewTitle').textContent = btn.dataset.title || '';
+        $('#viewSub').textContent = btn.dataset.sub || '';
+      }
+    }
+    for (const view of document.querySelectorAll('.view')) {
+      view.classList.toggle('active', view.id === `view-${name}`);
+    }
+  }
+
+  const speech = { voices: [] };
+
+  function loadVoices() {
+    if (typeof speechSynthesis === 'undefined') return;
+    const all = speechSynthesis.getVoices() || [];
+    speech.voices = all.filter((v) => /^zh/i.test(v.lang) || /Chinese|Huihui|Yaoyao|Kangkang|Xiaoxiao/i.test(v.name));
+    const sel = $('#voiceSelect');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">自动选择中文语音</option>';
+    for (const v of speech.voices) {
+      const opt = document.createElement('option');
+      opt.value = v.name;
+      opt.textContent = `${v.name}（${v.lang}）`;
+      sel.appendChild(opt);
+    }
+    if (prev) sel.value = prev;
+    addLog(`本机可用语音 ${speech.voices.length} 个${speech.voices.length ? '：' + speech.voices.map((v) => v.name).join('、') : ''}`);
+  }
+
+  function speakLocal(text) {
+    if (typeof speechSynthesis === 'undefined') {
+      toast('当前系统不支持语音朗读', 'err');
+      return;
+    }
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const chosen = speech.voices.find((v) => v.name === $('#voiceSelect').value);
+    const fallback = speech.voices.find((v) => /zh/i.test(v.lang)) || speech.voices[0];
+    const voice = chosen || fallback;
+    if (voice) {
+      u.voice = voice;
+      u.lang = voice.lang;
+    } else {
+      u.lang = 'zh-CN';
+    }
+    u.rate = 1;
+    u.pitch = 1;
+    speechSynthesis.speak(u);
+    addLog(`本机朗读（${voice ? voice.name : '系统默认'}）：${text.slice(0, 24)}${text.length > 24 ? '…' : ''}`);
+  }
+
+  function paintRange() {
+    const el = $('#volume');
+    const min = Number(el.min || 0);
+    const max = Number(el.max || 100);
+    const pct = ((Number(el.value) - min) / (max - min)) * 100;
+    el.style.background = `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${pct}%, var(--line) ${pct}%)`;
+  }
+
   function fmtDate(iso) {
     if (!iso) return '';
     const d = new Date(iso);
@@ -432,13 +500,11 @@
     $('#infoNode').textContent = info.node;
     $('#infoSystem').textContent = `${info.osVersion} · ${info.arch}`;
     $('#infoMedia').textContent = info.mediaPort ? `0.0.0.0:${info.mediaPort}` : '未启动';
-    $('#infoRepo').textContent = info.repo + (info.hasToken ? ' · 已配置 Token' : ' · 未配置 Token');
+    $('#infoRepo').textContent = info.repo;
     $('#infoUserData').textContent = info.userData;
     $('#infoUserData').title = info.userData;
     $('#autoCheck').checked = info.autoCheck !== false;
     $('#repoInput').value = info.repo;
-    $('#tokenInput').value = '';
-    $('#tokenInput').placeholder = info.hasToken ? 'GitHub Token 已保存（留空表示不修改）' : 'GitHub Token（私有仓库需要）';
     const st = await api.updateState();
     if (st && st.checked) applyUpdateResult(st.checked);
     else if (!about.result) setUpdateText('尚未检查更新', '');
@@ -492,15 +558,11 @@
   }
 
   async function saveUpdateConfig() {
-    const token = $('#tokenInput').value.trim();
     const patch = { repo: $('#repoInput').value.trim(), autoCheck: $('#autoCheck').checked };
-    if (token) patch.token = token;
     try {
       const info = await api.saveUpdateConfig(patch);
       about.info = info;
-      $('#infoRepo').textContent = info.repo + (info.hasToken ? ' · 已配置 Token' : ' · 未配置 Token');
-      $('#tokenInput').value = '';
-      $('#tokenInput').placeholder = info.hasToken ? 'GitHub Token 已保存（留空表示不修改）' : 'GitHub Token（私有仓库需要）';
+      $('#infoRepo').textContent = info.repo;
       about.result = null;
       $('#updateResult').classList.add('hidden');
       setUpdateText('更新源已保存，点「检查更新」重新检查', 'ok');
@@ -532,6 +594,7 @@
     $('#versionText').textContent = 'v' + cfg.appVersion;
     $('#volume').value = String(cfg.volume ?? 40);
     $('#volumeVal').textContent = String(cfg.volume ?? 40);
+    paintRange();
     applyMusicState(cfg.music);
 
     api.onLog((line) => {
@@ -588,13 +651,41 @@
     $('#btnStatus').onclick = () => simpleAction('status', '查询状态');
     $('#volume').addEventListener('input', onVolumeInput);
 
+    for (const btn of document.querySelectorAll('.rail-btn[data-view]')) {
+      btn.onclick = () => showView(btn.dataset.view);
+    }
+    $('#btnStatusTop').onclick = () => simpleAction('status', '查询状态');
+
     $('#btnTts').onclick = async () => {
       const text = $('#tts').value.trim();
       if (!text) { toast('先写点要念的内容'); return; }
       const r = await run('语音播报', () => api.action('tts', text));
       if (r) toast('已让音箱播报', 'ok');
     };
-    $('#tts').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnTts').click(); });
+    $('#btnTtsPreview').onclick = () => {
+      const text = $('#tts').value.trim();
+      if (!text) { toast('先写点要念的内容'); return; }
+      speakLocal(text);
+      toast('正在用本机语音朗读', 'ok');
+    };
+    $('#btnTtsStop').onclick = () => {
+      if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+      toast('已停止朗读');
+    };
+    for (const chip of document.querySelectorAll('.chip-btn[data-tts]')) {
+      chip.onclick = () => {
+        $('#tts').value = chip.dataset.tts || '';
+        $('#tts').focus();
+      };
+    }
+    if (typeof speechSynthesis !== 'undefined') {
+      loadVoices();
+      speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    $('#tts').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('#btnTts').click();
+    });
 
     $('#btnClearLog').onclick = () => { $('#log').innerHTML = ''; };
 
@@ -615,7 +706,6 @@
     $('#btnSaveUpdate').onclick = saveUpdateConfig;
     $('#autoCheck').onchange = () => api.saveUpdateConfig({ autoCheck: $('#autoCheck').checked });
     $('#repoInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveUpdateConfig(); });
-    $('#tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveUpdateConfig(); });
 
     api.onUpdateProgress((p) => {
       const bar = $('#updateProgressBar');

@@ -5,9 +5,10 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { MiAccount, MinaService, ACCOUNT_BASE, MINA_BASE } = require('./src/mina');
+const { MiAccount, MinaService, ACCOUNT_BASE, MINA_BASE, MINA_BASE_ALT } = require('./src/mina');
 const { PROVIDERS, providerFor, NETEASE_BASE, QQ_BASE } = require('./src/music');
 const { MediaServer } = require('./src/mediaServer');
+const { synthesize, MAX_TOTAL } = require('./src/speech');
 const { Store } = require('./src/store');
 const {
   DEFAULT_REPO,
@@ -60,6 +61,7 @@ const updateState = { result: null, checking: false, downloading: false };
 
 const UA_LOGIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const COOKIE_KEY = { netease: 'neteaseCookie', qq: 'qqCookie' };
+const TTS_VIA_AUDIO = new Set(['L05B', 'L05C', 'LX04', 'LX01', 'S12', 'S12A']);
 
 const LOGIN_PAGES = {
   netease: {
@@ -116,11 +118,6 @@ function updateRepo() {
   return String(custom || process.env.UPDATE_REPO || DEFAULT_REPO).trim();
 }
 
-function updateToken() {
-  const stored = store ? store.get('githubToken', '') : '';
-  return String(stored || process.env.GITHUB_TOKEN || '').trim();
-}
-
 function updateApiBase() {
   return process.env.GITHUB_API_BASE || DEFAULT_API;
 }
@@ -152,7 +149,6 @@ function appInfo() {
     userData: app.getPath('userData'),
     repo: updateRepo(),
     repoUrl: `https://github.com/${updateRepo()}`,
-    hasToken: !!updateToken(),
     autoCheck: store ? store.get('autoCheckUpdate', true) !== false : true,
     mediaPort: (media && media.port) || 0,
     license: pkg.license || '',
@@ -167,7 +163,6 @@ async function runUpdateCheck({ silent = false } = {}) {
   try {
     const result = await checkUpdate({
       repo,
-      token: updateToken(),
       current: app.getVersion(),
       apiBase: updateApiBase(),
     });
@@ -206,6 +201,7 @@ function createWindow() {
     backgroundColor: '#f6f6f7',
     title: '小爱音箱控制台',
     autoHideMenuBar: true,
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -228,7 +224,8 @@ function createWindow() {
           const probe = await mainWindow.webContents.executeJavaScript(
             `JSON.stringify({
               hasApi: typeof window.api === 'object',
-              title: document.querySelector('h1') && document.querySelector('h1').textContent,
+              title: document.querySelector('.rail-brand-text strong') && document.querySelector('.rail-brand-text strong').textContent,
+              view: document.querySelector('h1') && document.querySelector('h1').textContent,
               status: document.getElementById('statusText').textContent,
               buttons: document.querySelectorAll('button').length,
               songs: document.querySelectorAll('#songList li').length,
@@ -523,7 +520,11 @@ function musicStatus() {
 
 async function finishCloudLogin(account) {
   store.setAll({ miToken: account.token });
-  const mina = new MinaService(account, { minaBase: MINA, onLog: log });
+  const mina = new MinaService(account, {
+    minaBase: MINA,
+    minaFallback: process.env.XIAOMI_MINA_BASE ? null : MINA_BASE_ALT,
+    onLog: log,
+  });
   cloud.account = account;
   cloud.mina = mina;
   const devices = await mina.devices();
@@ -552,6 +553,7 @@ function registerIpc() {
       hasNeteaseCookie: !!store.get('neteaseCookie', ''),
       music: musicStatus(),
       deviceName: store.get('deviceName', ''),
+      ttsMode: store.get('ttsMode', 'auto'),
     };
   });
 
@@ -570,15 +572,14 @@ function registerIpc() {
 
   ipcMain.handle('update:check', () => runUpdateCheck());
 
-  ipcMain.handle('update:config', (_e, { repo, token, autoCheck } = {}) => {
+  ipcMain.handle('update:config', (_e, { repo, autoCheck } = {}) => {
     const patch = {};
     if (repo !== undefined) patch.updateRepo = String(repo || '').trim() ? normalizeRepo(repo) : '';
-    if (token !== undefined) patch.githubToken = String(token || '').trim();
     if (autoCheck !== undefined) patch.autoCheckUpdate = !!autoCheck;
     store.setAll(patch);
     const info = appInfo();
     updateState.result = null;
-    log(`更新源已设为 ${info.repo}${info.hasToken ? '（已配置 Token）' : '（未配置 Token）'}`);
+    log(`更新源已设为 ${info.repo}`);
     return info;
   });
 
@@ -601,7 +602,6 @@ function registerIpc() {
     log(`开始下载 ${st.asset.name}（${Math.round((st.asset.size || 0) / 1024 / 1024)}MB）→ ${dir}`);
     try {
       const saved = await downloadAsset(st.asset, {
-        token: updateToken(),
         destDir: dir,
         onProgress: (p) => {
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:progress', p);
@@ -695,8 +695,32 @@ function registerIpc() {
       case 'tts': {
         const text = String(value || '').trim();
         if (!text) throw new Error('请输入要播报的文字');
-        result = await mina.textToSpeech(dev.id, text);
-        break;
+        if (text.length > MAX_TOTAL) throw new Error(`播报文字请控制在 ${MAX_TOTAL} 字以内`);
+        const mode = store.get('ttsMode', 'auto');
+        const model = String(dev.hardware || '').toUpperCase();
+        let useAudio = mode === 'audio' || (mode === 'auto' && TTS_VIA_AUDIO.has(model));
+        let via = '';
+        if (!useAudio) {
+          try {
+            const r = await mina.textToSpeech(dev.id, text);
+            via = r.method === 'text_to_speech' ? '云端 TTS' : '云端 TTS（兼容模式）';
+          } catch (err) {
+            log(`云端 TTS 未被设备接受：${err.message}`);
+            useAudio = true;
+          }
+        }
+        if (useAudio) {
+          await media.start();
+          const voice = await synthesize(text, { dir: path.join(app.getPath('temp'), 'xiaoai-tts') });
+          const mediaId = media.addFile(voice.file);
+          const url = media.urlFor(mediaId, pickHost());
+          log(`已合成语音 ${voice.segments} 段（${Math.round(voice.bytes / 1024)}KB），经本地服务播报`);
+          const ok = await mina.playUrl(dev.id, url, dev.hardware);
+          if (!ok) throw new Error('音箱拒绝播放播报音频（检查局域网与防火墙专用网络放行）');
+          via = '本地合成播报';
+        }
+        log(`✓ 语音播报（${via}）：${text.slice(0, 24)}${text.length > 24 ? '…' : ''}`);
+        return { ok: true, mode: via };
       }
       case 'volume': {
         const v = Math.max(0, Math.min(100, Math.round(Number(value))));

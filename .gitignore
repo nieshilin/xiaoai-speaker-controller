@@ -6,3 +6,5 @@ Mineradio-paused/
 *.log
 .tmp-*
 shot.png
+build/icon-*.png
+!build/icon.png

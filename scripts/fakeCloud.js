@@ -6,6 +6,7 @@ const DEVICE = { deviceID: 'dev-l05b', name: '小爱音箱Play', hardware: 'L05B
 
 function startFakeCloud({ port = 0, host = '127.0.0.1' } = {}) {
   const seen = [];
+  const fake = { playing: false, volume: 40 };
 
   const server = http.createServer((req, res) => {
     let body = '';
@@ -58,7 +59,14 @@ function startFakeCloud({ port = 0, host = '127.0.0.1' } = {}) {
         const message = form.get('message') || '{}';
         seen.push({ method, message });
         let info = null;
-        if (method === 'player_get_play_status') info = JSON.stringify({ status: 2, volume: 40 });
+        if (method === 'player_play_music' || method === 'player_play_url') fake.playing = true;
+        if (method === 'player_set_volume') {
+          const vol = Number(new URLSearchParams(message).get('volume') || form.get('volume'));
+          if (Number.isFinite(vol)) fake.volume = Math.max(0, Math.min(100, vol));
+        }
+        if (method === 'player_get_play_status') {
+          info = JSON.stringify({ status: fake.playing ? 1 : 2, volume: fake.volume });
+        }
         return json({ code: 0, data: info ? { code: 0, info } : { code: 0 } });
       }
       if (p === '/api/cloudsearch/pc') {
