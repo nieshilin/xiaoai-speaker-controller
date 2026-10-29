@@ -9,3 +9,5 @@ shot.png
 build/icon-*.png
 !build/icon.png
 release2/
+dist/
+.tmp-install*/

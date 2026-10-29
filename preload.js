@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('api', {
   appInfo: () => ipcRenderer.invoke('app:info'),
   openRepo: () => ipcRenderer.invoke('app:openRepo'),
   openBlog: () => ipcRenderer.invoke('app:openBlog'),
+  createShortcut: () => ipcRenderer.invoke('app:createShortcut'),
   updateState: () => ipcRenderer.invoke('update:state'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
   saveUpdateConfig: (patch) => ipcRenderer.invoke('update:config', patch),

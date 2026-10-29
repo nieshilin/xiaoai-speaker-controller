@@ -119,6 +119,7 @@ function updateRepo() {
 }
 
 const AUTHOR_BLOG = 'https://www.xiaonie.me/';
+const SHORTCUT_NAME = '小爱音箱控制台';
 
 function updateApiBase() {
   return process.env.GITHUB_API_BASE || DEFAULT_API;
@@ -567,6 +568,33 @@ function registerIpc() {
   ipcMain.handle('app:openRepo', () => openTrusted(`https://github.com/${updateRepo()}`));
 
   ipcMain.handle('app:openBlog', () => openTrusted(AUTHOR_BLOG));
+
+  ipcMain.handle('app:createShortcut', () => {
+    if (!app.isPackaged) throw new Error('开发模式下无法创建快捷方式，请使用安装版或便携版程序');
+    const name = `${SHORTCUT_NAME}.lnk`;
+    const target = process.execPath;
+    const options = {
+      target,
+      cwd: path.dirname(target),
+      icon: target,
+      iconIndex: 0,
+      description: '小爱音箱控制台',
+      appUserModelId: 'com.local.xiaomi.speaker',
+    };
+    const created = [];
+    for (const dir of [app.getPath('desktop'), app.getPath('appData') + '\\Microsoft\\Windows\\Start Menu\\Programs']) {
+      const file = path.join(dir, name);
+      try {
+        const ok = shell.writeShortcutLink(file, 'create', options);
+        if (ok) created.push(file);
+      } catch (err) {
+        log(`创建快捷方式失败（${dir}）：${err.message}`);
+      }
+    }
+    if (!created.length) throw new Error('创建快捷方式失败，请检查桌面与开始菜单目录权限');
+    log(`✓ 已创建快捷方式：${created.join('、')}`);
+    return { ok: true, files: created };
+  });
 
   ipcMain.handle('update:state', () => ({
     ...appInfo(),

@@ -705,6 +705,16 @@
     $('#btnDownloadUpdate').onclick = downloadUpdate;
     $('#btnOpenRelease').onclick = () => api.openRelease();
     $('#btnOpenRepo').onclick = () => api.openRepo();
+    $('#btnCreateShortcut').onclick = async () => {
+      try {
+        const r = await api.createShortcut();
+        toast(`已创建桌面图标（${r.files.length} 处）`, 'ok');
+        addLog(`✓ 已创建快捷方式：${r.files.join('、')}`, 'ok');
+      } catch (err) {
+        toast('创建图标失败：' + err.message, 'err');
+        addLog(`✗ 创建快捷方式失败：${err.message}`, 'err');
+      }
+    };
     $('#infoBlog').onclick = () => api.openBlog();
     $('#infoBlog').onkeydown = (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
