@@ -10,4 +10,8 @@ build/icon-*.png
 !build/icon.png
 release2/
 dist/
+dist2/
+dist3/
+.buildtmp/
+testinstall/
 .tmp-install*/
