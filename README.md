@@ -159,6 +159,6 @@ scripts/make-icon.js   应用图标生成
 
 **音乐音源由网易云音乐 / QQ 音乐提供，本工具仅作播放控制，请支持正版。**
 
-Made with ❤️ by [nieshilin](https://github.com/nieshilin) · License [MIT](LICENSE)
+Made with ❤️ by [nieshilin](https://github.com/nieshilin) · 博客 [xiaonie.me](https://www.xiaonie.me/) · License [MIT](LICENSE)
 
 </div>
