@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;" />
+  <title>小爱音箱控制台</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
+          <rect x="8" y="6" width="32" height="36" rx="8" fill="#ff6a00" />
+          <circle cx="24" cy="18" r="6" fill="#fff" opacity="0.95" />
+          <circle cx="24" cy="18" r="2.2" fill="#ff6a00" />
+          <rect x="15" y="30" width="18" height="3" rx="1.5" fill="#fff" opacity="0.9" />
+          <rect x="15" y="35" width="12" height="3" rx="1.5" fill="#fff" opacity="0.6" />
+        </svg>
+        <div class="brand-text">
+          <h1>小爱音箱控制台</h1>
+          <p>云端 MiNA 通道 · 在线音乐与本地音乐</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="status" id="status">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">未连接</span>
+        </div>
+        <button class="version" id="version" type="button" title="关于应用 / 检查更新"><span id="versionText">v2.2.0</span><i class="badge hidden" id="updateBadge"></i></button>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="col">
+        <div class="card">
+          <div class="card-head">
+            <h2>小米账号</h2>
+            <span class="tag" id="accountTag">未登录</span>
+          </div>
+
+          <div class="row gap">
+            <button class="btn primary" id="btnQrLogin">扫码登录</button>
+            <button class="btn ghost" id="btnLogout" disabled>退出登录</button>
+          </div>
+
+          <div id="qrBox" class="qr-box hidden">
+            <img id="qrImg" alt="登录二维码" />
+            <div class="qr-side">
+              <strong>用米家 App 扫码</strong>
+              <p class="hint">手机打开「米家」→ 右上角「＋」→ 扫一扫，扫描二维码并在手机上确认。</p>
+              <button class="btn ghost sm" id="btnQrCancel">取消</button>
+            </div>
+          </div>
+
+          <label class="field" style="margin-top: 12px">
+            <span>选择小爱音箱</span>
+            <select id="deviceSelect" disabled>
+              <option value="">登录后自动读取设备</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>在线音乐</h2>
+            <span class="tag" id="musicTag">未登录</span>
+          </div>
+
+          <div class="seg" id="segProvider">
+            <button class="seg-btn active" data-provider="netease">网易云音乐</button>
+            <button class="seg-btn" data-provider="qq">QQ 音乐</button>
+          </div>
+
+          <div class="row">
+            <input id="q" type="text" placeholder="搜索歌曲 / 歌手 / 专辑" autocomplete="off" spellcheck="false" />
+            <button class="btn primary" id="btnSearch">搜索</button>
+          </div>
+
+          <ul class="song-list" id="songList">
+            <li class="empty">输入关键词搜索，点歌曲即可让音箱播放。</li>
+          </ul>
+
+          <div class="music-foot">
+            <button class="btn ghost sm" id="btnMusicLogin">登录账号</button>
+            <button class="btn ghost sm hidden" id="btnMusicLogout">退出登录</button>
+            <button class="btn ghost sm" id="btnCookiePanel">粘贴 Cookie</button>
+          </div>
+
+          <div class="cookie-row hidden" id="cookiePanel">
+            <input id="musicCookie" type="password" placeholder="粘贴浏览器里的 Cookie（含 MUSIC_U 或 qm_keyst）" autocomplete="off" spellcheck="false" />
+            <button class="btn ghost sm" id="btnCookieSave">保存</button>
+          </div>
+          <div class="cookie-hint hidden" id="cookieHint"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>本地音乐</h2>
+            <div class="row gap tight">
+              <button class="btn ghost sm" id="btnPrev">上一首</button>
+              <button class="btn ghost sm" id="btnNext">下一首</button>
+              <button class="btn ghost sm" id="btnPick">选择文件</button>
+            </div>
+          </div>
+          <ul class="playlist" id="playlist">
+            <li class="empty">还没有添加音乐。点「选择文件」加入本地音频，程序会通过内置 HTTP 服务推给音箱。</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="col">
+        <div class="card">
+          <div class="card-head">
+            <h2>播放控制</h2>
+            <span class="tag" id="mediaTag">媒体服务：启动中…</span>
+          </div>
+
+          <label class="field">
+            <span>播放网络音频地址</span>
+            <div class="row">
+              <input id="url" type="text" placeholder="https://example.com/song.mp3" autocomplete="off" spellcheck="false" />
+              <button class="btn primary" id="btnPlayUrl" disabled>播放</button>
+            </div>
+          </label>
+
+          <div class="controls">
+            <button class="btn ctrl" id="btnResume" disabled title="继续播放">
+              <svg viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" /></svg>
+              <span>播放</span>
+            </button>
+            <button class="btn ctrl" id="btnPause" disabled title="暂停">
+              <svg viewBox="0 0 24 24"><rect x="7" y="5" width="3.6" height="14" rx="1.2" /><rect x="13.4" y="5" width="3.6" height="14" rx="1.2" /></svg>
+              <span>暂停</span>
+            </button>
+            <button class="btn ctrl" id="btnStop" disabled title="停止">
+              <svg viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2" /></svg>
+              <span>停止</span>
+            </button>
+            <button class="btn ctrl" id="btnStatus" disabled title="查询播放状态">
+              <svg viewBox="0 0 24 24"><path d="M12 4a8 8 0 108 8h-2.2A5.8 5.8 0 1112 6.2z" /><rect x="11" y="2" width="2" height="6" rx="1" /></svg>
+              <span>状态</span>
+            </button>
+          </div>
+
+          <div class="volume">
+            <div class="volume-head">
+              <span>音量</span>
+              <strong id="volumeVal">40</strong>
+            </div>
+            <input id="volume" type="range" min="0" max="100" step="1" value="40" />
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>语音播报</h2>
+            <span class="tag">TTS</span>
+          </div>
+          <div class="row">
+            <input id="tts" type="text" placeholder="输入要音箱念出来的文字" autocomplete="off" />
+            <button class="btn primary" id="btnTts" disabled>播报</button>
+          </div>
+        </div>
+
+        <div class="card grow">
+          <div class="card-head">
+            <h2>运行日志</h2>
+            <button class="btn ghost sm" id="btnClearLog">清空</button>
+          </div>
+          <pre class="log" id="log"></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>音乐音源由网易云音乐 / QQ 音乐提供，本地文件经局域网推流给音箱。</span>
+      <span class="foot-right">
+        <button class="link" id="btnAbout" type="button">关于应用</button>
+        <span>F12 打开调试面板</span>
+      </span>
+    </footer>
+  </div>
+
+  <div class="modal hidden" id="aboutModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+      <header class="about-head">
+        <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
+          <rect x="8" y="6" width="32" height="36" rx="8" fill="#ff6a00" />
+          <circle cx="24" cy="18" r="6" fill="#fff" opacity="0.95" />
+          <circle cx="24" cy="18" r="2.2" fill="#ff6a00" />
+          <rect x="15" y="30" width="18" height="3" rx="1.5" fill="#fff" opacity="0.9" />
+          <rect x="15" y="35" width="12" height="3" rx="1.5" fill="#fff" opacity="0.6" />
+        </svg>
+        <div class="about-title">
+          <h2 id="aboutTitle">小爱音箱控制台 <span id="aboutVersion">v2.2.0</span></h2>
+          <p id="aboutDesc">云端 MiNA 通道 · 在线音乐与本地音乐</p>
+        </div>
+        <button class="btn ghost sm" id="btnAboutClose" type="button">关闭</button>
+      </header>
+
+      <div class="about-grid">
+        <div class="about-item"><span>应用版本</span><strong id="infoVersion">—</strong></div>
+        <div class="about-item"><span>Electron</span><strong id="infoElectron">—</strong></div>
+        <div class="about-item"><span>Chromium</span><strong id="infoChrome">—</strong></div>
+        <div class="about-item"><span>Node.js</span><strong id="infoNode">—</strong></div>
+        <div class="about-item"><span>运行系统</span><strong id="infoSystem">—</strong></div>
+        <div class="about-item"><span>媒体服务</span><strong id="infoMedia">—</strong></div>
+        <div class="about-item wide"><span>更新源</span><strong id="infoRepo">—</strong></div>
+        <div class="about-item wide"><span>数据目录</span><strong id="infoUserData" class="path">—</strong></div>
+      </div>
+
+      <section class="update-box">
+        <div class="update-head">
+          <div class="update-title">
+            <h3>版本更新</h3>
+            <p id="updateText">尚未检查更新</p>
+          </div>
+          <button class="btn primary sm" id="btnCheckUpdate" type="button">检查更新</button>
+        </div>
+
+        <div class="update-result hidden" id="updateResult">
+          <div class="update-meta">
+            <span id="updateLatest"></span>
+            <span id="updateDate"></span>
+          </div>
+          <pre class="update-notes" id="updateNotes"></pre>
+          <div class="row gap">
+            <button class="btn primary sm" id="btnDownloadUpdate" type="button">下载安装包</button>
+            <button class="btn ghost sm" id="btnOpenRelease" type="button">打开发布页</button>
+          </div>
+          <div class="progress hidden" id="updateProgress"><i id="updateProgressBar"></i></div>
+          <p class="update-tip" id="updateTip"></p>
+        </div>
+
+        <div class="update-settings">
+          <label class="check"><input type="checkbox" id="autoCheck" /> 启动时自动检查更新</label>
+          <div class="row gap">
+            <input id="repoInput" type="text" placeholder="owner/repo" autocomplete="off" spellcheck="false" />
+            <input id="tokenInput" type="password" placeholder="GitHub Token（私有仓库需要）" autocomplete="off" spellcheck="false" />
+            <button class="btn ghost sm" id="btnSaveUpdate" type="button">保存</button>
+          </div>
+          <p class="update-tip">Token 只保存在本机用户目录，不会写进源码；私有仓库必须填，公开仓库可留空。</p>
+        </div>
+      </section>
+
+      <footer class="about-foot">
+        <span id="aboutCopyright">—</span>
+        <span class="foot-right">
+          <button class="btn ghost sm" id="btnCopyInfo" type="button">复制版本信息</button>
+          <button class="btn ghost sm" id="btnOpenRepo" type="button">打开仓库</button>
+        </span>
+      </footer>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="renderer.js"></script>
+</body>
+</html>

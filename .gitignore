@@ -1,0 +1,8 @@
+node_modules/
+release/
+Mineradio-paused/
+.workbuddy/
+.env.local
+*.log
+.tmp-*
+shot.png

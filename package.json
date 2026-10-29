@@ -1,0 +1,45 @@
+{
+  "name": "xiaomi-speaker-controller",
+  "version": "2.2.0",
+  "private": true,
+  "description": "Windows 端小爱音箱控制台：云端 MiNA 通道 + 网易云/QQ 音乐在线播放 + 本地推流 + GitHub 版本更新（Electron）",
+  "main": "main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "check": "node scripts/selfcheck.js",
+    "e2e": "node scripts/e2e.js",
+    "dist": "electron-builder --win",
+    "shot": "electron . --shot"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.local.xiaomi.speaker",
+    "productName": "XiaoAiSpeakerControl",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "小爱音箱控制台"
+    }
+  }
+}
