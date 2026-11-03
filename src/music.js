@@ -4,6 +4,7 @@ const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 const { qqAuth, neteaseAuth } = require('./musicCookie');
+const { QishuiMusic } = require('./qishui');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const NETEASE_BASE = 'https://music.163.com';
@@ -420,6 +421,7 @@ class QQMusic {
 const PROVIDERS = {
   netease: { label: '网易云音乐', create: (opts) => new NeteaseMusic(opts) },
   qq: { label: 'QQ 音乐', create: (opts) => new QQMusic(opts) },
+  qishui: { label: '汽水音乐', create: (opts) => new QishuiMusic(opts) },
 };
 
 function providerFor(name, opts) {
@@ -428,4 +430,4 @@ function providerFor(name, opts) {
   return p.create(opts);
 }
 
-module.exports = { NeteaseMusic, QQMusic, PROVIDERS, providerFor, NETEASE_BASE, QQ_BASE };
+module.exports = { NeteaseMusic, QQMusic, QishuiMusic, PROVIDERS, providerFor, NETEASE_BASE, QQ_BASE };

@@ -176,6 +176,13 @@ function normalizeCookie(provider, raw) {
     return { ok: true, cookie, reason: '' };
   }
 
+  if (provider === 'qishui') {
+    if (!/(^|;\s*)(sessionid|sessionid_ss|sid_tt|sid_guard)=/i.test(cookie)) {
+      return { ok: false, cookie, reason: '汽水音乐 Cookie 缺少 sessionid 字段：请在汽水 PC 客户端抓 api.qishui.com 的请求，复制整行 Cookie' };
+    }
+    return { ok: true, cookie, reason: '' };
+  }
+
   if (!neteaseAuth(cookie).hasLogin) {
     return { ok: false, cookie, reason: '网易云 Cookie 缺少 MUSIC_U 字段，请确认已在浏览器登录 music.163.com' };
   }

@@ -34,6 +34,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="4" /><circle cx="12" cy="9" r="2.4" /><rect x="9.5" y="14.5" width="5" height="1.6" rx="0.8" /></svg>
           <span>设备</span>
         </button>
+        <button class="rail-btn" type="button" data-view="qishui" data-title="汽水音乐" data-sub="推荐流为主角 · 点卡片就让音箱播放">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8l-1 3.4H9L8 3z" /><path d="M9 6.4h6l1.1 10.9A3.1 3.1 0 0113 20.9h-2a3.1 3.1 0 01-3.1-3.6L9 6.4z" /><path d="M10.6 11h2.8" /></svg>
+          <span>汽水</span>
+        </button>
         <button class="rail-btn" type="button" data-view="music" data-title="在线音乐" data-sub="网易云 / QQ 音乐搜索后交给音箱播放">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12" /><circle cx="6.6" cy="18" r="2.6" /><circle cx="16.6" cy="16" r="2.6" /></svg>
           <span>音乐</span>
@@ -157,6 +161,85 @@
           </div>
         </section>
 
+        <section class="view" id="view-qishui">
+          <div class="qs-hero">
+            <div class="qs-hero-text">
+              <span class="qs-kicker">SODA MUSIC · 猜你喜欢</span>
+              <h2>汽水推荐</h2>
+              <p id="qsSub">按你的口味实时生成，点封面就直接交给音箱播放</p>
+              <div class="qs-metas">
+                <span class="qs-pill" id="qsLoginBadge">未登录 · 推荐仍可看</span>
+                <span class="qs-pill plain" id="qsCount">0 首</span>
+                <span class="qs-pill plain" id="qsFallbackTag">同名曲兜底：开</span>
+              </div>
+              <p class="qs-note">汽水接口为非官方网页私有接口，可能随时失效；失效时可用同名曲兜底或切到 QQ / 网易云</p>
+            </div>
+            <div class="qs-hero-actions">
+              <button class="btn qs-solid" id="btnQsRefresh" type="button">换一批</button>
+              <button class="btn qs-ghost" id="btnQsPlayAll" type="button">▶ 播放全部</button>
+              <button class="btn qs-ghost" id="btnQsStop" type="button">■ 停止</button>
+            </div>
+          </div>
+
+          <div class="qs-layout">
+            <div class="card qs-main-card">
+              <div class="card-head">
+                <h2>今日推荐</h2>
+                <label class="check qs-check">
+                  <input type="checkbox" id="qsFallback" checked />
+                  汽水取不到完整音源时，用 QQ / 网易云的同名曲目播放
+                </label>
+              </div>
+              <div class="qs-stage" id="qsStage">
+                <div class="qs-stage-empty">正在读取推荐…</div>
+              </div>
+            </div>
+
+            <aside class="qs-side">
+              <div class="card">
+                <div class="card-head">
+                  <h2>现在播放</h2>
+                  <span class="tag" id="qsPlayTag">待机</span>
+                </div>
+                <div class="qs-now" id="qsNow">
+                  <span class="qs-now-empty">还没有开始播放</span>
+                </div>
+                <div class="qs-bar"><i id="qsBar"></i></div>
+                <div class="row gap tight">
+                  <button class="btn ghost sm" id="btnQsLogin" type="button">扫码登录</button>
+                  <button class="btn ghost sm" id="btnQsStop2" type="button">停止连播</button>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <h2>我的歌单</h2>
+                  <button class="btn ghost sm" id="btnQsPlLoad" type="button">读取</button>
+                </div>
+                <select id="qsPlSelect">
+                  <option value="">点「读取」加载账号歌单</option>
+                </select>
+                <ul class="song-list qs-list" id="qsPlSongs">
+                  <li class="empty">登录汽水后可读取账号里的歌单。</li>
+                </ul>
+              </div>
+
+              <div class="card">
+                <div class="card-head">
+                  <h2>搜索汽水</h2>
+                </div>
+                <div class="row">
+                  <input id="qsQuery" type="text" placeholder="歌名 / 歌手 / 专辑" autocomplete="off" spellcheck="false" />
+                  <button class="btn primary sm" id="btnQsSearch" type="button">搜索</button>
+                </div>
+                <ul class="song-list qs-list" id="qsSearchList">
+                  <li class="empty">搜索需要登录汽水后使用；推荐流无需登录。</li>
+                </ul>
+              </div>
+            </aside>
+          </div>
+        </section>
+
         <section class="view" id="view-music">
           <div class="card">
             <div class="card-head">
@@ -167,6 +250,7 @@
             <div class="seg" id="segProvider">
               <button class="seg-btn active" data-provider="netease">网易云音乐</button>
               <button class="seg-btn" data-provider="qq">QQ 音乐</button>
+              <button class="seg-btn" data-provider="qishui">汽水音乐</button>
             </div>
 
             <div class="row">
@@ -187,6 +271,11 @@
             <div class="cookie-row hidden" id="cookiePanel">
               <input id="musicCookie" type="password" placeholder="粘贴浏览器里的 Cookie（含 MUSIC_U 或 qm_keyst）" autocomplete="off" spellcheck="false" />
               <button class="btn ghost sm" id="btnCookieSave">保存</button>
+            </div>
+            <div class="cookie-row hidden" id="qishuiKeysPanel">
+              <input id="qishuiHelios" type="password" placeholder="X-Helios 请求头" autocomplete="off" spellcheck="false" />
+              <input id="qishuiMedusa" type="password" placeholder="X-Medusa 请求头" autocomplete="off" spellcheck="false" />
+              <input id="qishuiDevice" type="text" placeholder="device_id" autocomplete="off" spellcheck="false" />
             </div>
             <div class="cookie-hint hidden" id="cookieHint"></div>
           </div>
@@ -277,6 +366,33 @@
     </main>
   </div>
 
+  <div class="modal hidden" id="qishuiQrModal">
+    <div class="modal-card qr-card" role="dialog" aria-modal="true" aria-labelledby="qrTitle">
+      <header class="qr-head">
+        <div>
+          <h2 id="qrTitle">扫码登录汽水音乐</h2>
+          <p class="qr-sub">用汽水音乐 App 扫一扫，登录状态会自动保存</p>
+        </div>
+        <button class="btn ghost sm" id="btnQrClose" type="button">关闭</button>
+      </header>
+
+      <div class="qr-body">
+        <div class="qr-box"><img id="qishuiQrImg" alt="汽水音乐登录二维码" /></div>
+        <ol class="qr-steps">
+          <li>打开手机上的<b>汽水音乐 App</b>（抖音账号通用）</li>
+          <li>点右上角「扫一扫」，对准左侧二维码</li>
+          <li>手机上确认登录，这里会自动完成</li>
+        </ol>
+      </div>
+
+      <p class="qr-status" id="qishuiQrStatus">正在生成二维码…</p>
+      <div class="qr-foot">
+        <button class="btn ghost sm" id="btnQrRefresh" type="button">刷新二维码</button>
+        <span class="qr-tip">约 2 分钟有效；若弹出「安全验证」窗口，请按提示完成</span>
+      </div>
+    </div>
+  </div>
+
   <div class="modal hidden" id="aboutModal">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
       <header class="about-head">
@@ -305,6 +421,11 @@
         <div class="about-item wide"><span>作者博客</span><strong id="infoBlog" class="link" role="button" tabindex="0" title="点击在浏览器中打开">https://www.xiaonie.me/</strong></div>
         <div class="about-item wide"><span>数据目录</span><strong id="infoUserData" class="path">—</strong></div>
       </div>
+
+      <p class="api-note">
+        <b>注意</b>：汽水音乐相关接口（推荐流、播放地址、歌单）来自汽水音乐网页端私有接口，<b>属于非官方能力，可能随时失效</b>——
+        官方调整签名、鉴权或接口结构后，相关功能可能报错或返回空结果。届时建议改用 QQ 音乐 / 网易云音源，并在「关于」里检查更新。
+      </p>
 
       <section class="update-box">
         <div class="update-head">

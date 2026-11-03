@@ -7,6 +7,7 @@ const os = require('os');
 
 const { MiAccount, MinaService, ACCOUNT_BASE, MINA_BASE, MINA_BASE_ALT } = require('./src/mina');
 const { PROVIDERS, providerFor, NETEASE_BASE, QQ_BASE } = require('./src/music');
+const { createQishuiQrLoginBridge } = require('./src/qishui/qishuiLogin');
 const { MediaServer } = require('./src/mediaServer');
 const { synthesize, MAX_TOTAL } = require('./src/speech');
 const { Store } = require('./src/store');
@@ -71,7 +72,11 @@ const playQueue = {
 };
 
 const UA_LOGIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const COOKIE_KEY = { netease: 'neteaseCookie', qq: 'qqCookie' };
+const COOKIE_KEY = { netease: 'neteaseCookie', qq: 'qqCookie', qishui: 'qishuiCookie' };
+/** 汽水音乐需要的额外签名头（客户端每次请求现算，只能由用户抓包提供） */
+const QISHUI_KEY = { helios: 'qishuiHelios', medusa: 'qishuiMedusa', deviceId: 'qishuiDeviceId' };
+/** 汽水取不到完整音源时，用 QQ / 网易云的同名曲目兜底播放 */
+const QISHUI_FALLBACK_KEY = 'qishuiFallback';
 const TTS_VIA_AUDIO = new Set(['L05B', 'L05C', 'LX04', 'LX01', 'S12', 'S12A']);
 
 const LOGIN_PAGES = {
@@ -305,6 +310,17 @@ function requireDevice() {
   return cloud.selected;
 }
 
+/** 汽水扫码登录桥：配置落在 userData，登录态与 store 里的 Cookie 双向同步 */
+let qishuiLoginBridge = null;
+function qishuiAuth() {
+  if (!qishuiLoginBridge) {
+    qishuiLoginBridge = createQishuiQrLoginBridge({
+      configFile: path.join(app.getPath('userData'), 'qishui-login.json'),
+    });
+  }
+  return qishuiLoginBridge;
+}
+
 function musicOf(name = musicBox.current) {
   if (!PROVIDERS[name]) throw new Error(`未知音源：${name}`);
   if (!musicBox.cache[name]) {
@@ -312,9 +328,29 @@ function musicOf(name = musicBox.current) {
       cookie: store.get(COOKIE_KEY[name], ''),
       ...(name === 'netease' ? { base: process.env.NETEASE_BASE || NETEASE_BASE } : {}),
       ...(name === 'qq' ? { base: process.env.QQ_SEARCH_BASE || QQ_BASE, apiBase: process.env.QQ_API_BASE || undefined } : {}),
+      ...(name === 'qishui' ? {
+        helios: store.get(QISHUI_KEY.helios, ''),
+        medusa: store.get(QISHUI_KEY.medusa, ''),
+        deviceId: store.get(QISHUI_KEY.deviceId, ''),
+      } : {}),
     });
   }
   return musicBox.cache[name];
+}
+
+/** 保存汽水的签名凭证；只覆盖传入的字段（留空=不改），任意变化都重建实例 */
+function saveQishuiKeys({ helios, medusa, deviceId } = {}) {
+  const patch = {};
+  if (helios !== undefined) patch[QISHUI_KEY.helios] = String(helios || '').trim();
+  if (medusa !== undefined) patch[QISHUI_KEY.medusa] = String(medusa || '').trim();
+  if (deviceId !== undefined) patch[QISHUI_KEY.deviceId] = String(deviceId || '').trim();
+  if (Object.keys(patch).length) store.setAll(patch);
+  delete musicBox.cache.qishui;
+  return {
+    helios: store.get(QISHUI_KEY.helios, ''),
+    medusa: store.get(QISHUI_KEY.medusa, ''),
+    deviceId: store.get(QISHUI_KEY.deviceId, ''),
+  };
 }
 
 async function readLoginCookie(ses, page) {
@@ -325,6 +361,9 @@ async function readLoginCookie(ses, page) {
 function saveMusicCookie(provider, cookie) {
   musicOf(provider).setCookie(cookie);
   store.setAll({ [COOKIE_KEY[provider]]: cookie });
+  if (provider === 'qishui') {
+    try { qishuiAuth().setCookie(cookie); } catch (_) { /* 扫码桥未初始化时忽略 */ }
+  }
 }
 
 async function clearLoginSession(provider) {
@@ -528,7 +567,23 @@ async function openMusicLogin(provider) {
 function musicStatus() {
   const out = {};
   for (const name of Object.keys(PROVIDERS)) {
-    out[name] = { label: PROVIDERS[name].label, loggedIn: musicOf(name).loggedIn };
+    const inst = musicOf(name);
+    out[name] = {
+      label: PROVIDERS[name].label,
+      loggedIn: inst.loggedIn,
+      ...(name === 'qishui'
+        ? {
+          signed: inst.hasSignature,
+          // 取流走 web 网关，只要登录 Cookie 就够；签名头只在搜索等 PC 接口才需要
+          ready: inst.loggedIn,
+          canSearch: inst.loggedIn && inst.hasSignature,
+          hasHelios: !!inst.helios,
+          hasMedusa: !!inst.medusa,
+          deviceId: inst.deviceId || '',
+          fallback: fallbackEnabled(),
+        }
+        : {}),
+    };
   }
   return { current: musicBox.current, providers: out };
 }
@@ -556,11 +611,99 @@ function pushQueueState() {
   }
 }
 
+function fallbackEnabled() {
+  return store.get(QISHUI_FALLBACK_KEY, true) !== false;
+}
+
+/** 曲名归一化：去掉括号补充说明（(Live)/(女声版)…）和标点，避免同名曲匹配不上 */
+function normalizeTitle(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[（(\[【].*?[）)\]】]/g, '')
+    .replace(/[\s\-_·・,，.。!！?？'"“”‘’/\\|:：;；+&]/g, '');
+}
+
+function artistTokens(text) {
+  return String(text || '')
+    .toLowerCase()
+    .split(/[\/、,&;；]+|\s{2,}/)
+    .map((s) => normalizeTitle(s))
+    .filter(Boolean);
+}
+
+function artistsMatch(a, b) {
+  const left = artistTokens(a);
+  const right = artistTokens(b);
+  if (!left.length || !right.length) return true; // 缺歌手信息时不因此否决
+  return left.some((x) => right.some((y) => x.includes(y) || y.includes(x)));
+}
+
+/** 在 QQ / 网易云里找同名同歌手的曲目，用于汽水取不到完整音源时的兜底 */
+async function findSameSong(song) {
+  const title = normalizeTitle(song.name);
+  if (!title) return null;
+  const artist = artistTokens(song.artists)[0] || '';
+  for (const name of ['qq', 'netease']) {
+    let list = [];
+    try {
+      list = await musicOf(name).search(`${song.name} ${artist}`.trim(), { limit: 8 });
+    } catch (_) {
+      continue;
+    }
+    const hit = (list || []).find((s) => normalizeTitle(s.name) === title && artistsMatch(s.artists, song.artists));
+    if (!hit) continue;
+    try {
+      const picked = await musicOf(name).songUrl(hit.id);
+      if (picked && picked.url && !picked.trial) {
+        return { provider: name, id: hit.id, name: hit.name, artists: hit.artists, picked };
+      }
+    } catch (_) {
+      /* 这个音源没有版权，试下一个 */
+    }
+  }
+  return null;
+}
+
 async function resolveSongUrl(song) {
-  const picked = await musicOf(song.provider).songUrl(song.id);
+  const src = song.provider || musicBox.current;
+  let picked = null;
+  let firstError = null;
+  try {
+    picked = await musicOf(src).songUrl(song.id);
+  } catch (err) {
+    firstError = err;
+  }
+
+  let alt = null;
+  const needAlt = src === 'qishui' && fallbackEnabled() && song.name && (!picked || picked.trial);
+  if (needAlt) {
+    alt = await findSameSong(song).catch(() => null);
+    if (alt) {
+      picked = alt.picked;
+      log(`汽水音源不可用，改用${PROVIDERS[alt.provider].label}同名曲目：${alt.name}${alt.artists ? ` - ${alt.artists}` : ''}`);
+    }
+  }
+  if (!picked) {
+    if (src === 'qishui' && fallbackEnabled() && song.name) {
+      throw new Error(
+        `${firstError ? firstError.message : '汽水未给完整音源'}；同名曲兜底也没在 QQ / 网易云找到可播放的版本，可换一首试试`,
+      );
+    }
+    throw firstError || new Error('这首歌暂时取不到播放地址');
+  }
+
+  const useProvider = alt ? alt.provider : src;
+  const useId = alt ? alt.id : song.id;
   let url = picked.url.replace(/^http:/, 'https:');
-  if (media && media.port) url = media.proxyUrl(song.provider, song.id, pickHost());
-  return { url, trial: !!picked.trial, br: picked.br || 0 };
+  if (media && media.port) url = media.proxyUrl(useProvider, useId, pickHost());
+  return {
+    url,
+    trial: !!picked.trial,
+    br: picked.br || 0,
+    encrypted: !!picked.encrypted,
+    provider: useProvider,
+    matched: alt ? { provider: alt.provider, label: PROVIDERS[alt.provider].label, name: alt.name, artists: alt.artists } : null,
+  };
 }
 
 async function stopQueue(waitMs = 6000) {
@@ -914,6 +1057,9 @@ function registerIpc() {
 
   ipcMain.handle('music:login', async (_e, { provider } = {}) => {
     const name = provider || musicBox.current;
+    if (name === 'qishui') {
+      throw new Error('汽水音乐请用「扫码登录」：点登录按钮后用汽水音乐 App 扫二维码');
+    }
     let got;
     try {
       got = await openMusicLogin(name);
@@ -931,8 +1077,58 @@ function registerIpc() {
     const name = provider || musicBox.current;
     saveMusicCookie(name, '');
     await clearLoginSession(name);
+    if (name === 'qishui') await qishuiAuth().clear().catch(() => {});
     log(`已退出${PROVIDERS[name].label}`);
     return musicStatus();
+  });
+
+  /* 汽水扫码登录：生成二维码 → 前端轮询 → 成功后自动保存 Cookie */
+  ipcMain.handle('qishui:qr', async () => {
+    const result = await qishuiAuth().createQrCode();
+    const data = (result && result.data) || {};
+    log('已生成汽水音乐登录二维码，请用汽水音乐 App 扫码');
+    return {
+      token: String(data.token || ''),
+      qrcode: String(data.qrcode || ''),
+      scanUrl: String(data.scan_url || ''),
+      expireAt: Number(data.expire_time || 0),
+    };
+  });
+
+  ipcMain.handle('qishui:qrCheck', async (_e, { token } = {}) => {
+    let result;
+    try {
+      result = await qishuiAuth().checkQrConnect(token);
+    } catch (err) {
+      // 用户关掉二次验证窗口：返回明确状态，避免前端立刻重新拉起验证
+      if (err && err.code === 'QISHUI_MFA_CANCELLED') {
+        log('汽水二次验证已取消，等待用户刷新二维码');
+        return {
+          confirmed: false,
+          cancelled: true,
+          status: 'mfa_cancelled',
+          expired: false,
+          message: String(err.message || '二次验证未完成'),
+        };
+      }
+      throw err;
+    }
+    const data = (result && result.data) || {};
+    if (data.confirmed) {
+      const cookie = qishuiAuth().getCookie();
+      if (!cookie) throw new Error('扫码已确认，但没读到登录 Cookie，请刷新二维码重试');
+      saveMusicCookie('qishui', cookie);
+      const profile = await musicOf('qishui').profile().catch(() => null);
+      log(`✓ 汽水音乐登录成功${profile && profile.nickname ? `：${profile.nickname}` : ''}`);
+      return { confirmed: true, ...musicStatus(), profile };
+    }
+    const status = String(data.status || '');
+    return {
+      confirmed: false,
+      status,
+      expired: status === 'expired' || Number(data.error_code) === 2,
+      message: String(data.description || (result && result.message) || ''),
+    };
   });
 
   ipcMain.handle('music:cookie', async (_e, { provider, cookie } = {}) => {
@@ -949,26 +1145,27 @@ function registerIpc() {
     return { ...musicStatus(), profile, hasCookie: !!c };
   });
 
+  ipcMain.handle('music:keys', async (_e, keys = {}) => {
+    const saved = saveQishuiKeys(keys || {});
+    log(`汽水音乐签名凭证已保存（X-Helios ${saved.helios ? '✓' : '×'} / X-Medusa ${saved.medusa ? '✓' : '×'}）`);
+    return musicStatus();
+  });
+
   ipcMain.handle('music:search', async (_e, { keywords, limit, offset, provider } = {}) => {
     const name = provider || musicBox.current;
-    if (PROVIDERS[name]) musicBox.current = name;
+    // 显式指定音源（例如汽水独立界面）时不改动「音乐」页当前选中的音源
+    if (PROVIDERS[name] && !provider) musicBox.current = name;
     const songs = await musicOf(name).search(keywords, { limit: limit || 30, offset: offset || 0 });
     log(`${PROVIDERS[name].label}搜索「${keywords}」→ ${songs.length} 首`);
     return songs;
   });
 
-  ipcMain.handle('music:play', async (_e, { id, name, provider } = {}) => {
+  ipcMain.handle('music:play', async (_e, { id, name, artists, provider } = {}) => {
     const dev = requireDevice();
     const src = provider || musicBox.current;
-    const picked = await musicOf(src).songUrl(id);
-    const direct = picked.url.replace(/^http:/, 'https:');
-    log(`解析音源：${name || id}${picked.trial ? '（试听片段）' : `（${Math.round(picked.br / 1000)}kbps）`}`);
-    let url = direct;
-    if (media && media.port) {
-      url = media.proxyUrl(src, id, pickHost());
-      log(`转本地代理：${url.replace(/^http:\/\//, '')}`);
-    }
-    const ok = await cloud.mina.playUrl(dev.id, url, dev.hardware);
+    const resolved = await resolveSongUrl({ id, name, artists, provider: src });
+    log(`解析音源：${name || id}${resolved.trial ? '（试听片段）' : `（${Math.round(resolved.br / 1000)}kbps${resolved.encrypted ? ' · 内存解密' : ''}）`}${resolved.matched ? ` · 来自${resolved.matched.label}` : ''}`);
+    const ok = await cloud.mina.playUrl(dev.id, resolved.url, dev.hardware);
     if (!ok) throw new Error('音箱拒绝播放该音源');
     log(`✓ 已让音箱播放：${name || id}`);
     setTimeout(async () => {
@@ -981,7 +1178,7 @@ function registerIpc() {
         /* 状态探测失败不影响播放 */
       }
     }, 2500);
-    return { ok: true, url, direct, trial: picked.trial, br: picked.br };
+    return { ok: true, trial: resolved.trial, br: resolved.br, matched: resolved.matched };
   });
 
   /* ---------- 平台歌单（直接读取账号里收藏的歌单） ---------- */
@@ -999,6 +1196,22 @@ function registerIpc() {
     const songs = await musicOf(name).playlistSongs(id);
     log(`已读取歌单内容：${songs.length} 首`);
     return songs;
+  });
+
+  /* ---------- 汽水音乐独立界面：推荐流 / 兜底开关 ---------- */
+
+  ipcMain.handle('qishui:feed', async (_e, { cursor, count, refresh, exclude } = {}) => {
+    const inst = musicOf('qishui');
+    if (typeof inst.feed !== 'function') throw new Error('当前版本不支持汽水推荐流');
+    const res = await inst.feed({ cursor, count, refresh, exclude });
+    log(`汽水推荐：取到 ${res.songs.length} 首${refresh ? '（换一批）' : ''}`);
+    return res;
+  });
+
+  ipcMain.handle('qishui:fallback', (_e, { enabled } = {}) => {
+    store.set(QISHUI_FALLBACK_KEY, enabled !== false);
+    log(enabled !== false ? '已开启「汽水取不到音源时用 QQ/网易云同名曲目」' : '已关闭汽水跨音源兜底');
+    return musicStatus();
   });
 
   ipcMain.handle('queue:state', () => queueState());
@@ -1078,9 +1291,28 @@ if (isTestMode) app.setPath('userData', path.join(os.tmpdir(), `xiaoai-test-${Da
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   store = new Store(app.getPath('userData'));
+
+  // 汽水登录态：扫码配置与 store 里的 Cookie 双向补齐，避免重装/换版本后掉登录
+  try {
+    const qishuiCookie = qishuiAuth().getCookie();
+    const stored = store.get(COOKIE_KEY.qishui, '');
+    if (qishuiCookie && qishuiCookie !== stored) saveMusicCookie('qishui', qishuiCookie);
+    else if (!qishuiCookie && stored) qishuiAuth().setCookie(stored);
+  } catch (_) { /* 登录态读取失败不影响启动 */ }
   media = new MediaServer({ port: 8931, onLog: log });
   media.registerResolver('qq', (mid) => musicOf('qq').songUrl(mid));
   media.registerResolver('netease', (sid) => musicOf('netease').songUrl(sid));
+  media.registerResolver('qishui', async (tid) => {
+    const qs = musicOf('qishui');
+    const picked = await qs.songUrl(tid);
+    // 汽水完整音源是 AES-CTR 加密的 MP4：本地在内存里解密后直接喂给音箱，不写磁盘
+    if (picked.encrypted) {
+      const dec = await qs.fetchDecrypted(tid);
+      if (dec) return { buffer: dec.buffer, contentType: dec.contentType };
+      throw new Error('汽水音源解密失败');
+    }
+    return { url: picked.url, br: picked.br };
+  });
 
   registerIpc();
   createWindow();

@@ -27,6 +27,13 @@ module.exports = function runE2E(win, app) {
   }
 
   win.webContents.once('did-finish-load', async () => {
+    // 音量轮询同步在 window 隐藏/最小化时会暂停（正常省电逻辑），
+    // 测试开始前把窗口拉到前台并聚焦，避免人工操作窗口造成偶发失败
+    try {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    } catch (_) { /* 窗口操作失败不影响用例 */ }
     const checks = [];
     const add = (name, pass, extra) => {
       checks.push({ name, pass, extra });
@@ -118,9 +125,82 @@ module.exports = function runE2E(win, app) {
       const queueStopped = await until(`document.getElementById('log').textContent.includes('已停止歌单连播')`, 10000);
       add('停止连播 → 队列结束', queueStopped);
 
+      // 汽水音乐：改成扫码登录入口（按钮可见且文案为扫码），凭证面板保留为备用
+      await js(`document.querySelector('#segProvider .seg-btn[data-provider="qishui"]').click(); true`);
+      const qsActive = await until(`document.querySelector('#segProvider .seg-btn[data-provider="qishui"]').classList.contains('active')`);
+      const loginBtn = await js(`(() => {
+        const b = document.getElementById('btnMusicLogin');
+        return { hidden: b.classList.contains('hidden'), text: b.textContent.trim() };
+      })()`);
+      // 面板可能因为之前的用例已经打开，这里只负责确保它是打开状态
+      await js(`(() => {
+        const panel = document.getElementById('cookiePanel');
+        if (panel.classList.contains('hidden')) document.getElementById('btnCookiePanel').click();
+        return !panel.classList.contains('hidden');
+      })()`);
+      const keysShown = await until(`!document.getElementById('qishuiKeysPanel').classList.contains('hidden')`);
+      const hintText = await js(`document.getElementById('cookieHint').textContent`);
+      const qrUi = await js(`!!document.getElementById('qishuiQrModal')
+        && !!document.getElementById('qishuiQrImg')
+        && !!document.getElementById('btnQrRefresh')`);
+      add('汽水音乐 → 显示扫码登录入口 / 保留凭证面板',
+        qsActive && !loginBtn.hidden && /扫码/.test(loginBtn.text) && keysShown && qrUi,
+        `按钮「${loginBtn.text}」${/扫码/.test(hintText) ? ' / 提示含扫码说明' : ''}`);
+
+      // 扫码登录：点按钮 → 真实生成二维码（依赖网络）
+      await js(`document.getElementById('btnMusicLogin').click(); true`);
+      const qsQrShown = await until(`(() => {
+        const m = document.getElementById('qishuiQrModal');
+        const img = document.getElementById('qishuiQrImg');
+        return !!m && !m.classList.contains('hidden') && !!img && String(img.src).startsWith('data:image');
+      })()`, 30000);
+      add('汽水扫码登录 → 二维码弹窗', qsQrShown,
+        await js(`document.getElementById('qishuiQrStatus').textContent`));
+      await js(`document.getElementById('btnQrRefresh').click(); true`);
+      const qrRefreshed = await until(`String(document.getElementById('qishuiQrImg').src).startsWith('data:image')`, 30000);
+      add('刷新二维码', qrRefreshed);
+      await js(`document.getElementById('btnQrClose').click(); true`);
+      const qrClosed = await until(`document.getElementById('qishuiQrModal').classList.contains('hidden')`);
+      add('关闭二维码弹窗', qrClosed);
+
       await js(`document.querySelector('#segProvider .seg-btn[data-provider="netease"]').click(); true`);
       const backNetease = await until(`document.querySelector('#segProvider .seg-btn[data-provider="netease"]').classList.contains('active')`);
       add('切回网易云音乐', backNetease);
+
+      // 汽水独立界面：推荐流 / 换一批 / 兜底开关
+      await js(`document.querySelector('.rail-btn[data-view="qishui"]').click(); true`);
+      const qsViewOn = await until(`document.getElementById('view-qishui').classList.contains('active')`);
+      const qsItems = await until(`document.querySelectorAll('#qsStage .qs-up-item').length >= 6`, 20000);
+      const qsFirst = await js(`(document.querySelector('#qsStage .qs-focus-name') || {}).textContent || ''`);
+      const qsItemCount = await js(`document.querySelectorAll('#qsStage .qs-up-item').length`);
+      add('汽水界面 → 推荐流聚焦展示', qsViewOn && qsItems, `${qsItemCount} 首 · ${qsFirst}`);
+
+      const qsBadge = await js(`document.getElementById('qsLoginBadge').textContent`);
+      const qsPills = await js(`document.getElementById('qsFallbackTag').textContent`);
+      add('汽水界面 → 登录态与兜底徽标', /未登录|已登录/.test(qsBadge) && /兜底：[开关]/.test(qsPills), `${qsBadge} · ${qsPills}`);
+
+      await js(`document.getElementById('btnQsRefresh').click(); true`);
+      const qsRefreshed = await until(`(document.getElementById('log').textContent.match(/汽水推荐：取到 /g) || []).length >= 2`, 15000);
+      add('换一批 → 重新拉取推荐流', qsRefreshed);
+
+      await js(`(() => {
+        const cb = document.getElementById('qsFallback');
+        cb.checked = false;
+        cb.dispatchEvent(new Event('change'));
+        return true;
+      })()`);
+      const fbOff = await until(`document.getElementById('qsFallbackTag').textContent.includes('关')`, 6000);
+      await js(`(() => {
+        const cb = document.getElementById('qsFallback');
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change'));
+        return true;
+      })()`);
+      const fbOn = await until(`document.getElementById('qsFallbackTag').textContent.includes('开')`, 6000);
+      add('同名曲兜底 → 开关保存并回显', fbOff && fbOn);
+
+      await js(`document.querySelector('.rail-btn[data-view="device"]').click(); true`);
+      await until(`document.getElementById('view-device').classList.contains('active')`);
 
       await js(`(() => {
         const v = document.getElementById('volume');

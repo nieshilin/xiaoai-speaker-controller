@@ -14,6 +14,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+/** 内存缓冲上限：只放几首，播完就淘汰，避免占内存/磁盘 */
+const MAX_BUFFER_BYTES = 96 * 1024 * 1024;
+const MAX_BUFFER_ITEMS = 6;
+const BUFFER_TTL_MS = 15 * 60 * 1000;
+
 const MIME = {
   '.mp3': 'audio/mpeg',
   '.flac': 'audio/flac',
@@ -34,8 +39,9 @@ class MediaServer {
     this.port = 0;
     this.server = null;
     this.files = new Map(); // id -> { path, name, size }
-    this.resolvers = new Map(); // provider -> async (id) => { url, br }
+    this.resolvers = new Map(); // provider -> async (id) => { url, br } 或 { buffer, contentType }
     this.resolved = new Map(); // `${provider}:${id}` -> { url, br, at }
+    this.buffers = new Map(); // `${provider}:${id}` -> { buffer, contentType, at }
     this.onLog = typeof onLog === 'function' ? onLog : () => {};
   }
 
@@ -161,13 +167,27 @@ class MediaServer {
     }
 
     const key = `${provider}:${id}`;
-    let hit = this.resolved.get(key);
-    if (!hit || Date.now() - hit.at > 10 * 60 * 1000) {
+
+    // 需要本地解密的音源（如汽水加密 MP4）：resolver 直接返回内存缓冲，命中缓存就不再重复下载
+    const cached = this._readBuffer(key);
+    if (cached) {
+      this._serveBuffer(req, res, cached);
+      return;
+    }
+
+    const hit = this.resolved.get(key);
+    let source = hit && Date.now() - hit.at < 10 * 60 * 1000 ? hit : null;
+    if (!source) {
       try {
         const picked = await resolver(id);
-        if (!picked || !picked.url) throw new Error('未取到播放地址');
-        hit = { url: picked.url, br: picked.br || 0, at: Date.now() };
-        this.resolved.set(key, hit);
+        if (!picked) throw new Error('未取到播放地址');
+        if (picked.buffer) {
+          this._serveBuffer(req, res, this._rememberBuffer(key, picked));
+          return;
+        }
+        if (!picked.url) throw new Error('未取到播放地址');
+        source = { url: picked.url, br: picked.br || 0, at: Date.now() };
+        this.resolved.set(key, source);
       } catch (err) {
         res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end(`Resolve Failed: ${err.message}`);
@@ -175,7 +195,7 @@ class MediaServer {
       }
     }
 
-    const target = new URL(hit.url);
+    const target = new URL(source.url);
     const lib = target.protocol === 'http:' ? http : require('https');
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36',
@@ -218,6 +238,76 @@ class MediaServer {
       }
     });
     upstream.end();
+  }
+
+  /** 内存缓冲：过期即丢弃，按数量与总字节数双限淘汰最旧的 */
+  _readBuffer(key) {
+    const hit = this.buffers.get(key);
+    if (!hit) return null;
+    if (Date.now() - hit.at > BUFFER_TTL_MS) {
+      this.buffers.delete(key);
+      return null;
+    }
+    hit.at = Date.now(); // 用过就续期，连播时同一首不会被反复淘汰
+    return hit;
+  }
+
+  _rememberBuffer(key, picked) {
+    const entry = {
+      buffer: picked.buffer,
+      contentType: picked.contentType || 'audio/mp4',
+      at: Date.now(),
+    };
+    this.buffers.delete(key);
+    this.buffers.set(key, entry);
+    let total = 0;
+    for (const [k, v] of this.buffers) total += v.buffer.length;
+    while (this.buffers.size > MAX_BUFFER_ITEMS || total > MAX_BUFFER_BYTES) {
+      const oldestKey = this.buffers.keys().next().value;
+      if (oldestKey === key) break; // 刚放进去的先留着
+      const removed = this.buffers.get(oldestKey);
+      this.buffers.delete(oldestKey);
+      total -= removed ? removed.buffer.length : 0;
+    }
+    this.log(`解密音源已载入内存：${Math.round(entry.buffer.length / 1024)}KB（当前缓存 ${this.buffers.size} 首）`);
+    return entry;
+  }
+
+  /** 从内存缓冲响应，支持 Range（音箱会发 206 请求做拖动/分段解码） */
+  _serveBuffer(req, res, entry) {
+    const buf = entry.buffer;
+    const size = buf.length;
+    const range = req.headers.range;
+    if (range) {
+      const rm = /bytes=(\d*)-(\d*)/.exec(range);
+      let start = rm && rm[1] ? parseInt(rm[1], 10) : 0;
+      let end = rm && rm[2] ? parseInt(rm[2], 10) : size - 1;
+      if (Number.isNaN(start) || start < 0) start = 0;
+      if (Number.isNaN(end) || end >= size) end = size - 1;
+      if (start > end) {
+        res.writeHead(416, { 'Content-Range': `bytes */${size}` });
+        res.end();
+        return;
+      }
+      res.writeHead(206, {
+        'Content-Type': entry.contentType,
+        'Content-Length': end - start + 1,
+        'Content-Range': `bytes ${start}-${end}/${size}`,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-store',
+      });
+      if (req.method === 'HEAD') { res.end(); return; }
+      res.end(buf.subarray(start, end + 1));
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': entry.contentType,
+      'Content-Length': size,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-store',
+    });
+    if (req.method === 'HEAD') { res.end(); return; }
+    res.end(buf);
   }
 
   stop() {

@@ -36,11 +36,21 @@ const fail = (name, err) => { results.push({ ok: false, name }); console.log(`  
 
 function checkSyntax() {
   const files = ['main.js', 'preload.js'];
-  for (const dir of ['src', 'renderer', 'scripts']) {
+  const walk = (dir, prefix) => {
     const p = path.join(ROOT, dir);
-    if (!fs.existsSync(p)) continue;
-    for (const f of fs.readdirSync(p)) if (f.endsWith('.js')) files.push(`${dir}/${f}`);
-  }
+    if (!fs.existsSync(p)) return;
+    for (const entry of fs.readdirSync(p, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === 'auth-assets') continue;
+        walk(path.join(dir, entry.name), `${prefix}${entry.name}/`);
+      } else if (entry.name.endsWith('.js')) {
+        files.push(`${prefix}${entry.name}`);
+      }
+    }
+  };
+  walk('src', 'src/');
+  walk('renderer', 'renderer/');
+  walk('scripts', 'scripts/');
   const bad = [];
   for (const f of files) {
     try {
@@ -462,6 +472,318 @@ function checkQueueGuards() {
   }
 }
 
+/** 汽水扫码登录：离线验证桥接层的 Cookie 落库与状态判定（不发起网络请求） */
+async function checkQishuiLogin() {
+  const { createQishuiQrLoginBridge, hasLoginCookie } = require('../src/qishui/qishuiLogin');
+  const os = require('os');
+  const cfgFile = path.join(os.tmpdir(), `xiaoai-qishui-login-test-${process.pid}.json`);
+  try { fs.unlinkSync(cfgFile); } catch (_) { /* 首次运行不存在 */ }
+
+  const bridge = createQishuiQrLoginBridge({ configFile: cfgFile });
+  const empty = bridge.getStatus();
+  if (empty.loggedIn || empty.cookieReady) throw new Error('空配置不应判定为已登录');
+
+  const cookie = 'sessionid=abc123; sessionid_ss=def456; sid_tt=ghi789';
+  bridge.setCookie(cookie);
+  const after = bridge.getStatus();
+  if (bridge.getCookie() !== cookie) throw new Error('setCookie 未写回配置');
+  if (!after.loggedIn || !after.cookieReady) throw new Error('写入 sessionid 后未判定为已登录');
+  if (!fs.existsSync(cfgFile)) throw new Error('配置未落盘');
+
+  // 缺登录字段的 Cookie 不能算已登录（避免半截 Cookie 误判）
+  bridge.setCookie('msToken=xyz; ttwid=1');
+  if (bridge.getStatus().loggedIn) throw new Error('无 sessionid 的 Cookie 被误判为已登录');
+  bridge.setCookie('');
+  if (bridge.getStatus().loggedIn) throw new Error('清空后仍判定为已登录');
+
+  const plain = hasLoginCookie('foo=1');
+  if (plain) throw new Error('hasLoginCookie 判定过宽');
+  ok('汽水扫码登录桥：Cookie 落库 / 登录态判定 / 清除');
+
+  // 并发查询必须单飞：二次验证窗口打开期间重复查询会重渲染验证组件，导致窗口闪现即关
+  const cfgFile2 = path.join(os.tmpdir(), `xiaoai-qishui-singleflight-${process.pid}.json`);
+  try { fs.unlinkSync(cfgFile2); } catch (_) { /* 首次运行不存在 */ }
+  let authCalls = 0;
+  const slowAuth = {
+    configure() {},
+    async getQrCode() {
+      return { message: 'success', data: { token: 'TK-SF', qrcode: 'data:image/png;base64,AAAA' } };
+    },
+    async checkQrConnect() {
+      authCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return { message: 'success', data: { error_code: 0, status: '2', confirmed: false } };
+    },
+    async clear() {},
+  };
+  const sfBridge = createQishuiQrLoginBridge({ configFile: cfgFile2, auth: slowAuth });
+  await sfBridge.createQrCode();
+  const sfResults = await Promise.all([
+    sfBridge.checkQrConnect('TK-SF'),
+    sfBridge.checkQrConnect('TK-SF'),
+    sfBridge.checkQrConnect('TK-SF'),
+  ]);
+  if (authCalls !== 1) throw new Error(`并发扫码查询未单飞：底层被调用 ${authCalls} 次`);
+  if (!sfResults.every((r) => r && r.data && String(r.data.status) === '2')) throw new Error('单飞结果未被复用');
+  ok('汽水扫码登录桥：并发查询单飞（避免二次验证窗口被重复触发）');
+
+  // 二次验证互斥：窗口只允许一个验证流程
+  const authSrc = fs.readFileSync(path.join(ROOT, 'src', 'qishui', 'qishuiAuth.js'), 'utf8');
+  if (!/verifyInFlight/.test(authSrc) || !/runSecondVerify/.test(authSrc)) {
+    throw new Error('qishuiAuth 缺少二次验证互斥（verifyInFlight）');
+  }
+  ok('汽水二次验证：同一时间只允许一个验证窗口');
+
+  // 主进程与界面接线：IPC 通道、扫码入口、二维码弹窗
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+  const htmlSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
+  const preloadSrc = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
+  const wired = /ipcMain\.handle\('qishui:qr'/.test(mainSrc)
+    && /ipcMain\.handle\('qishui:qrCheck'/.test(mainSrc)
+    && /qishuiAuth\(\)\.setCookie/.test(mainSrc)
+    && preloadSrc.includes("ipcRenderer.invoke('qishui:qr')")
+    && /async function openQishuiQr/.test(rendererSrc)
+    && /startQrPolling/.test(rendererSrc)
+    && /setTimeout\(tick/.test(rendererSrc)
+    && /QISHUI_MFA_CANCELLED/.test(mainSrc)
+    && /r\.cancelled/.test(rendererSrc)
+    && /id="qishuiQrModal"/.test(htmlSrc)
+    && /id="qishuiQrImg"/.test(htmlSrc);
+  if (!wired) throw new Error('汽水扫码登录接线不完整');
+  ok('汽水扫码登录接线：IPC / 预加载 / 弹窗 / 串行轮询');
+
+  try { fs.unlinkSync(cfgFile); } catch (_) { /* 清理失败不影响结果 */ }
+  try { fs.unlinkSync(cfgFile2); } catch (_) { /* 清理失败不影响结果 */ }
+}
+
+async function checkQishui() {
+  const { QishuiMusic, __test } = require('../src/qishui');
+  const { extractSearchTracks, extractPlaylistTracks, extractPlaylists, extractFeedTracks, findAudio } = __test;
+
+  // 1. 搜索响应：result_groups[].data[] 里混着 track 与 playlist
+  const searchBody = {
+    result_groups: [
+      {
+        data: [
+          { type: 'track', track: { id: '111', name: '座位', duration: 245670, artists: [{ name: '姚晓棠' }], album: { name: '专辑', url_cover: { urls: ['https://p3/x.jpg'] } }, playable_range: { start: 167808, duration: 44160 } } },
+          { type: 'playlist', playlist: { id: '999', title: '精选' } },
+          { type: 'track', entity: { track_wrapper: { track: { id: '222', name: '完整版', duration: 200000, artists: [{ simple_display_name: 'A' }], playable_range: { duration: 200000 } } } } },
+        ],
+      },
+    ],
+  };
+  const songs = extractSearchTracks(searchBody);
+  const okSearch = songs.length === 2
+    && songs[0].id === '111' && songs[0].artists === '姚晓棠' && songs[0].vip === true
+    && songs[1].id === '222' && songs[1].vip === false && songs[1].cover === '';
+  if (okSearch) ok('汽水搜索响应解析（track / entity 包装 / 试听限制识别）');
+  else fail('汽水搜索响应解析', new Error(JSON.stringify(songs)));
+
+  // 2. 歌单列表与歌单详情
+  const pls = extractPlaylists({ playlists: [{ id: 7, title: '我的收藏', count_tracks: 3 }] });
+  const plTracks = extractPlaylistTracks({ media_resources: [{ entity: { track_wrapper: { track: { id: '333', name: 'X', duration: 100000 } } } }] });
+  if (pls.length === 1 && pls[0].id === '7' && pls[0].count === 3 && plTracks.length === 1 && plTracks[0].id === '333') {
+    ok('汽水歌单列表 / 歌单详情解析');
+  } else {
+    fail('汽水歌单解析', new Error(JSON.stringify({ pls, plTracks })));
+  }
+
+  // 3. 取流：多档码率里挑最高，并识别 play_auth
+  const trackBody = {
+    track: {
+      audio_info: {
+        video_list: [
+          { main_url: 'https://cdn/low.m4a?x=1', br: 68000 },
+          { main_url: 'https://cdn/high.m4a?x=1', br: 260000 },
+        ],
+      },
+    },
+  };
+  const picked = findAudio(trackBody);
+  const withAuth = findAudio({ ...trackBody, play_auth: { spade_a: 'AAA' } });
+  if (picked.url === 'https://cdn/high.m4a?x=1' && picked.br === 260000 && withAuth.spade) {
+    ok('汽水取流挑选最高码率 / 识别加密标记');
+  } else {
+    fail('汽水取流解析', new Error(JSON.stringify({ picked, withAuth })));
+  }
+
+  // 4. web 网关 media-player：登录态给多档，挑最高码率并能解出 AES key
+  const model = (gears, duration) => JSON.stringify({
+    video_duration: duration,
+    video_list: gears.map((g) => ({
+      main_url: g.url,
+      backup_url: '',
+      video_meta: { real_bitrate: g.br, size: g.size || 1000 },
+      encrypt_info: { encrypt: true, spade_a: g.spade },
+    })),
+  });
+  const mediaBody = {
+    player_infos: [{
+      video_model: model([
+        { url: 'https://cdn/mid.m4a', br: 132000, spade: 'nLwS+16xEPlYtRL6WIEUzF+AD/lAtDrkQaML8lm4I+hwlDidnQ==' },
+        { url: 'https://cdn/best.m4a', br: 260000, spade: 'kLwe9mKwHsxjsBj+ZrEq/FSLBMZMvwT1SLoY6km6NfZ4gTCAgA==' },
+      ], 210),
+    }],
+  };
+  const mpSend = async () => ({ status: 200, buffer: Buffer.from(JSON.stringify(mediaBody)) });
+  const mp = new QishuiMusic({ cookie: 'sessionid=abc1234567890', send: mpSend });
+  let best = null;
+  try { best = await mp.songUrl('123'); } catch (err) { best = { error: err.message }; }
+  const bestOk = best && best.url === 'https://cdn/best.m4a'
+    && best.br === 260000
+    && best.encrypted === true
+    && best.decryptKey === '54e0eeefd7f845ea960b02388888c33a'
+    && best.trial === false;
+  if (bestOk) ok('汽水 media-player：最高码率 / 加密识别 / spade_a 解出 AES key');
+  else fail('汽水 media-player 解析', new Error(JSON.stringify(best)));
+
+  // 5. 只有单档且时长被截短 ⇒ 判为试听片段（未登录时的典型响应）
+  const trialSend = async () => ({
+    status: 200,
+    buffer: Buffer.from(JSON.stringify({
+      player_infos: [{ video_model: model([{ url: 'https://cdn/trial.m4a', br: 132000, spade: 'nLwS+16xEPlYtRL6WIEUzF+AD/lAtDrkQaML8lm4I+hwlDidnQ==' }], 30) }],
+    })),
+  });
+  const trialQ = new QishuiMusic({ cookie: '', send: trialSend });
+  let trialPick = null;
+  try { trialPick = await trialQ.songUrl('124'); } catch (err) { trialPick = { error: err.message }; }
+  if (trialPick && trialPick.trial === true && trialPick.br === 132000) ok('汽水 media-player：单档短时长识别为试听片段');
+  else fail('汽水试听片段识别', new Error(JSON.stringify(trialPick)));
+
+  // 6. spade_a 固定向量：算法移植后仍能解出正确 key
+  const { resolveAudioKey } = require('../src/qishui/decryptor');
+  const vectors = [
+    ['kLwe9mKwHsxjsBj+ZrEq/FSLBMZMvwT1SLoY6km6NfZ4gTCAgA==', '54e0eeefd7f845ea960b02388888c33a'],
+    ['nLwS+16xEPlYtRL6WIEUzF+AD/lAtDrkQaML8lm4I+hwlDidnQ==', '11547106382d45269b76b8b02992a79f'],
+  ];
+  const vectorOk = vectors.every(([spade, want]) => resolveAudioKey({ spade_a: spade }) === want);
+  let badKey = '';
+  try { resolveAudioKey({ spade_a: Buffer.from('not-a-real-spade').toString('base64') }); } catch (err) { badKey = err.message; }
+  if (vectorOk && /无效|不能为空/.test(badKey)) ok('汽水 spade_a → AES-128 key（固定向量校验）');
+  else fail('spade_a 解密', new Error(JSON.stringify({ vectorOk, badKey })));
+
+
+  // 7. 空响应（Cookie 过期）要给可操作的提示，不能只说「失败」
+  const emptySend = async () => ({ status: 200, buffer: Buffer.from('') });
+  const noKeys = new QishuiMusic({ cookie: '', send: emptySend });
+  let msg = '';
+  try { await noKeys.search('测试'); } catch (err) { msg = err.message; }
+  const hintOk = /还未登录|X-Helios/.test(msg);
+
+  const withKeys = new QishuiMusic({ cookie: 'sessionid=abc1234567890', helios: 'h', medusa: 'm', send: emptySend });
+  let msg2 = '';
+  try { await withKeys.search('测试'); } catch (err) { msg2 = err.message; }
+  const hintOk2 = /过期|重新抓包/.test(msg2);
+
+  if (hintOk && hintOk2) ok('汽水空响应给出签名头 / 过期提示');
+  else fail('汽水空响应提示', new Error(JSON.stringify({ msg, msg2 })));
+
+  // 5. 登录态与就绪判定
+  const ready = new QishuiMusic({ cookie: 'sessionid=abc', helios: 'h', medusa: 'm' });
+  const cookieOnly = new QishuiMusic({ cookie: 'sessionid=abc' });
+  if (ready.ready && ready.loggedIn && !cookieOnly.ready && !new QishuiMusic({}).loggedIn) {
+    ok('汽水「Cookie + 签名头」就绪判定');
+  } else {
+    fail('汽水就绪判定', new Error(JSON.stringify({ ready: ready.ready, cookieOnly: cookieOnly.ready })));
+  }
+
+  // 6. 主进程接线：音源注册、凭证存储、代理解析
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const wired = /qishui:\s*'qishuiCookie'/.test(mainSrc)
+    && mainSrc.includes("registerResolver('qishui'")
+    && mainSrc.includes("ipcMain.handle('music:keys'")
+    && /case 'qishui'|name === 'qishui'/.test(mainSrc);
+  if (wired) ok('汽水音源在主进程完成接线（存储 / IPC / 媒体代理）');
+  else fail('汽水主进程接线', new Error('缺少存储键、music:keys 或代理注册'));
+
+  // 7. 推荐流：items 解析 / VIP 只认 label_info / 封面补模板后缀
+  const feedSongs = extractFeedTracks({
+    items: [
+      {
+        type: 'track',
+        entity: {
+          track_wrapper: {
+            track: {
+              id: '444', name: '推荐曲', duration: 200000,
+              artists: [{ name: '歌手A' }],
+              stats: { count_collected: 12345 },
+              label_info: { only_vip_playable: true },
+              album: { name: '专', url_cover: { uri: 'tos/x', urls: ['https://p3.test/img/'], template_prefix: 'tplv-abc' } },
+            },
+          },
+        },
+      },
+      {
+        type: 'track',
+        entity: {
+          track_wrapper: {
+            track: { id: '445', name: '免费曲', duration: 200000, playable_range: { duration: 40000 } },
+          },
+        },
+      },
+    ],
+  });
+  const feedOk = feedSongs.length === 2
+    && feedSongs[0].vip === true
+    && feedSongs[0].hot === 12345
+    && feedSongs[0].cover === 'https://p3.test/img/tos/x~tplv-abc-image.jpg'
+    && feedSongs[1].vip === false;
+  if (feedOk) ok('汽水推荐流解析（VIP 标记 / 热度 / 封面模板）');
+  else fail('汽水推荐流解析', new Error(JSON.stringify(feedSongs)));
+
+  // 8. feed() 走 api5-lq 的 POST 网关，并能透出 status_code 错误
+  const feedPayload = {
+    items: [
+      { type: 'track', entity: { track_wrapper: { track: { id: '551', name: 'A', duration: 100000 } } } },
+      { type: 'track', entity: { track_wrapper: { track: { id: '552', name: 'B', duration: 100000 } } } },
+    ],
+    has_more: true,
+  };
+  const feedInst = new QishuiMusic({
+    send: async (url, opts) => {
+      if (!/api5-lq\.qishui\.com\/luna\/pc\/feed\/song-tab/.test(url)) throw new Error(`推荐流应走 web 网关：${url}`);
+      if (opts.method !== 'POST') throw new Error('推荐流应为 POST');
+      if (!/device_platform=web/.test(url)) throw new Error('推荐流缺 web 公共参数');
+      return { status: 200, buffer: Buffer.from(JSON.stringify(feedPayload)) };
+    },
+  });
+  try {
+    const res = await feedInst.feed({ count: 10 });
+    const resOk = res.songs.length === 2 && res.hasMore === true && res.nextCursor === 2;
+    if (resOk) ok('汽水 feed()：web 网关 POST / 游标推进');
+    else fail('汽水 feed() 解析', new Error(JSON.stringify(res)));
+  } catch (err) {
+    fail('汽水 feed() 解析', err);
+  }
+
+  const errInst = new QishuiMusic({
+    send: async () => ({ status: 200, buffer: Buffer.from(JSON.stringify({ status_code: 1000006, status_info: { status_msg: '当前设备无法访问' } })) }),
+  });
+  let feedErrMsg = '';
+  try { await errInst.feed(); } catch (err) { feedErrMsg = err.message; }
+  if (/当前设备无法访问/.test(feedErrMsg)) ok('汽水 feed() 错误信息透出');
+  else fail('汽水 feed() 错误透出', new Error(feedErrMsg || '未抛错'));
+
+  // 9. 汽水独立界面接线：IPC / 预加载 / 页面 / 兜底匹配
+  const preloadSrc = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
+  const htmlSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
+  const rendererSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+  const qsWired = mainSrc.includes("ipcMain.handle('qishui:feed'")
+    && mainSrc.includes("ipcMain.handle('qishui:fallback'")
+    && mainSrc.includes('QISHUI_FALLBACK_KEY')
+    && mainSrc.includes('function findSameSong')
+    && mainSrc.includes('function fallbackEnabled')
+    && preloadSrc.includes("invoke('qishui:feed'")
+    && preloadSrc.includes("invoke('qishui:fallback'")
+    && htmlSrc.includes('id="qsStage"')
+    && htmlSrc.includes('id="qsFallback"')
+    && rendererSrc.includes('async function loadQishuiFeed')
+    && rendererSrc.includes('function qsPlayAll');
+  if (qsWired) ok('汽水独立界面接线（推荐流 IPC / 兜底开关 / 页面渲染）');
+  else fail('汽水独立界面接线', new Error('缺少 qishui:feed / qishui:fallback 或页面元素'));
+}
+
 function checkProviders() {
   try {
     const n = providerFor('netease', { cookie: '' });
@@ -553,6 +875,39 @@ async function checkMediaServer() {
     });
     if (failStatus !== 502) throw new Error('取址失败应返回 502，实际 ' + failStatus);
     ok('代理取址失败返回 502');
+
+    // 解密音源：resolver 直接返回内存缓冲，不写磁盘，Range / 缓存都要正常
+    let resolveCalls = 0;
+    const plain = crypto.randomBytes(8192);
+    ms.registerResolver('encrypted', async () => {
+      resolveCalls += 1;
+      return { buffer: plain, contentType: 'audio/mp4' };
+    });
+    const bufUrl = ms.proxyUrl('encrypted', 'track-1', '127.0.0.1');
+    const bufGet = (headers = {}) => new Promise((resolve, reject) => {
+      const req = http.get(bufUrl, { headers }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      });
+      req.on('error', reject);
+      req.setTimeout(4000, () => req.destroy(new Error('缓冲代理超时')));
+    });
+
+    const whole = await bufGet();
+    const piece = await bufGet({ Range: 'bytes=1000-1999' });
+    const cached = await bufGet();
+    const bufOk = whole.status === 200
+      && whole.body.equals(plain)
+      && whole.headers['content-type'] === 'audio/mp4'
+      && whole.headers['accept-ranges'] === 'bytes'
+      && piece.status === 206
+      && piece.body.equals(plain.subarray(1000, 2000))
+      && /^bytes 1000-1999\/8192$/.test(piece.headers['content-range'])
+      && cached.status === 200
+      && resolveCalls === 1;
+    if (bufOk) ok('内存解密音源代理（不落盘 · Range · 缓存命中）', `resolver 调用 ${resolveCalls} 次`);
+    else fail('内存缓冲代理', new Error(JSON.stringify({ status: whole.status, piece: piece.status, resolveCalls })));
   } catch (err) {
     fail('媒体服务', err);
   } finally {
@@ -701,24 +1056,27 @@ async function checkUpdater() {
 
 (async () => {
   console.log('小爱音箱控制台 · 自检\n');
-  console.log('[1/8] 语法');
+  console.log('[1/9] 语法');
   try { checkSyntax(); } catch (err) { fail('语法检查', err); }
-  console.log('[2/8] MiNA 云端通道');
+  console.log('[2/9] MiNA 云端通道');
   try { await checkMina(); } catch (err) { fail('MiNA 云端通道', err); }
   try { await checkQrLogin(); } catch (err) { fail('扫码登录', err); }
-  console.log('[3/8] 在线音乐（网易云）');
+  console.log('[3/9] 在线音乐（网易云）');
   await checkMusic();
-  console.log('[4/8] 在线音乐（QQ 音乐）');
+  console.log('[4/9] 在线音乐（QQ 音乐）');
   await checkQQMusic();
   checkProviders();
   checkCookieTools();
-  console.log('[5/8] 音量同步（issue #2）');
+  console.log('[5/9] 在线音乐（汽水音乐）');
+  try { await checkQishui(); } catch (err) { fail('汽水音乐', err); }
+  try { await checkQishuiLogin(); } catch (err) { fail('汽水扫码登录', err); }
+  console.log('[6/9] 音量同步（issue #2）');
   try { checkVolumeSync(); } catch (err) { fail('音量同步', err); }
-  console.log('[6/8] 连播队列保护');
+  console.log('[7/9] 连播队列保护');
   try { checkQueueGuards(); } catch (err) { fail('连播队列保护', err); }
-  console.log('[7/8] 本地媒体服务');
+  console.log('[8/9] 本地媒体服务');
   await checkMediaServer();
-  console.log('[8/8] 版本更新');
+  console.log('[9/9] 版本更新');
   try { await checkUpdater(); } catch (err) { fail('版本更新', err); }
 
   const bad = results.filter((r) => !r.ok);

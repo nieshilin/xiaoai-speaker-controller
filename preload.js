@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('api', {
   musicLogin: (provider) => ipcRenderer.invoke('music:login', { provider }),
   musicLogout: (provider) => ipcRenderer.invoke('music:logout', { provider }),
   setMusicCookie: (provider, cookie) => ipcRenderer.invoke('music:cookie', { provider, cookie }),
+  setMusicKeys: (keys) => ipcRenderer.invoke('music:keys', keys),
+  qishuiQr: () => ipcRenderer.invoke('qishui:qr'),
+  qishuiQrCheck: (token) => ipcRenderer.invoke('qishui:qrCheck', { token }),
+  qishuiFeed: (opts) => ipcRenderer.invoke('qishui:feed', opts || {}),
+  setQishuiFallback: (enabled) => ipcRenderer.invoke('qishui:fallback', { enabled }),
 
   playlistList: (provider) => ipcRenderer.invoke('music:playlists', { provider }),
   playlistSongs: (provider, id) => ipcRenderer.invoke('music:playlistSongs', { provider, id }),
