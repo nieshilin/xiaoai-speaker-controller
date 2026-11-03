@@ -12,6 +12,10 @@ release2/
 dist/
 dist2/
 dist3/
+dist4/
+dist5/
 .buildtmp/
 testinstall/
+build-v24*.log
+build-release.log
 .tmp-install*/

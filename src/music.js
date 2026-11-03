@@ -170,6 +170,47 @@ class NeteaseMusic {
     if (!body || !body.profile) return null;
     return { nickname: body.profile.nickname || '', userId: body.profile.userId || '' };
   }
+
+  async accountId() {
+    if (this._uid) return this._uid;
+    const body = await fetchJson(`${this.base}/api/user/account`, {
+      headers: { Referer: `${this.base}/` },
+      cookie: this.cookieHeader,
+    }).catch(() => null);
+    this._uid = (body && body.account && String(body.account.id)) || '';
+    return this._uid;
+  }
+
+  /** 账号里的歌单（自建 + 收藏） */
+  async playlists() {
+    const uid = await this.accountId();
+    if (!uid) throw new Error('未登录网易云音乐，请先登录账号');
+    const body = await fetchJson(`${this.base}/api/user/playlist?uid=${uid}&limit=200&offset=0&includeVideo=true`, {
+      headers: { Referer: `${this.base}/` },
+      cookie: this.cookieHeader,
+    });
+    const list = Array.isArray(body.playlist) ? body.playlist : [];
+    return list.map((p) => ({
+      id: String(p.id),
+      name: p.name || '未命名歌单',
+      count: Number(p.trackCount) || 0,
+      cover: p.coverImgUrl || '',
+      creator: (p.creator || {}).nickname || '',
+      own: String((p.creator || {}).userId || '') === uid,
+    }));
+  }
+
+  /** 歌单内的歌曲 */
+  async playlistSongs(id) {
+    const pid = String(id || '').trim();
+    if (!pid) throw new Error('缺少歌单 id');
+    const body = await fetchJson(`${this.base}/api/v6/playlist/detail?id=${encodeURIComponent(pid)}&n=1000`, {
+      headers: { Referer: `${this.base}/` },
+      cookie: this.cookieHeader,
+    });
+    const pl = (body && body.playlist) || {};
+    return (pl.tracks || []).map(mapNeteaseSong);
+  }
 }
 
 class QQMusic {
@@ -330,6 +371,49 @@ class QQMusic {
   async profile() {
     if (!this.loggedIn) return null;
     return { nickname: this.uin ? `QQ ${this.uin}` : '已登录', userId: this.uin };
+  }
+
+  /** 账号歌单（新版 musicu 接口，兼容微信登录的加密 uin） */
+  async playlists() {
+    if (!this.uin) throw new Error('未登录 QQ 音乐，请先登录账号');
+    const uin = this.uin;
+    const payload = {
+      comm: { ct: 24, cv: 0, uin, format: 'json' },
+      req: { module: 'music.musicasset.PlaylistBaseRead', method: 'GetPlaylistByUin', param: { uin } },
+    };
+    const body = await fetchJson(`${this.apiBase}/cgi-bin/musicu.fcg?format=json`, {
+      method: 'POST',
+      payload,
+      headers: { Referer: 'https://y.qq.com/', Origin: 'https://y.qq.com' },
+      cookie: this.cookie,
+    });
+    const list = (((body || {}).req || {}).data || {}).v_playlist || [];
+    return list
+      .map((p) => ({
+        id: String(p.tid || p.dirId || ''),
+        name: p.dirName || '未命名歌单',
+        count: Number(p.songNum || 0),
+        cover: p.bigpicUrl || p.picUrl || '',
+        creator: p.nick || '',
+        own: true,
+      }))
+      .filter((p) => p.id);
+  }
+
+  /** 歌单内的歌曲 */
+  async playlistSongs(id) {
+    const did = String(id || '').trim();
+    if (!did) throw new Error('缺少歌单 id');
+    const qs = new URLSearchParams({
+      type: '1', json: '1', utf8: '1', onlysong: '0', new_format: '1',
+      disstid: did, format: 'json', g_tk: '5381',
+    });
+    const body = await fetchJson(`${this.base}/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?${qs}`, {
+      headers: { Referer: `https://y.qq.com/n/yqq/playlist/${did}.html` },
+      cookie: this.cookie,
+    });
+    const cd = (((body || {}).cdlist) || [])[0] || {};
+    return (cd.songlist || []).map(mapQQSong).filter((s) => s.id);
   }
 }
 

@@ -27,6 +27,17 @@ contextBridge.exposeInMainWorld('api', {
   musicLogout: (provider) => ipcRenderer.invoke('music:logout', { provider }),
   setMusicCookie: (provider, cookie) => ipcRenderer.invoke('music:cookie', { provider, cookie }),
 
+  playlistList: (provider) => ipcRenderer.invoke('music:playlists', { provider }),
+  playlistSongs: (provider, id) => ipcRenderer.invoke('music:playlistSongs', { provider, id }),
+  queuePlay: (title, songs, index) => ipcRenderer.invoke('queue:play', { title, songs, index }),
+  queueStop: () => ipcRenderer.invoke('queue:stop'),
+  queueState: () => ipcRenderer.invoke('queue:state'),
+  onQueueProgress: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on('playlist:progress', handler);
+    return () => ipcRenderer.removeListener('playlist:progress', handler);
+  },
+
   pickFiles: () => ipcRenderer.invoke('media:pick'),
   mediaStatus: () => ipcRenderer.invoke('media:status'),
   playLocal: (item) => ipcRenderer.invoke('media:playLocal', item),

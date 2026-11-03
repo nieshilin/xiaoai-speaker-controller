@@ -59,6 +59,16 @@ const cloud = { account: null, mina: null, devices: [], selected: null, qrAccoun
 const musicBox = { current: 'netease', cache: {} };
 const updateState = { result: null, checking: false, downloading: false };
 
+/* 歌单连播队列：按顺序解析音源 → 推给音箱 → 轮询状态等待播完 → 下一首 */
+const playQueue = {
+  items: [],
+  index: -1,
+  running: false,
+  stopFlag: false,
+  paused: false,
+  title: '',
+};
+
 const UA_LOGIN = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const COOKIE_KEY = { netease: 'neteaseCookie', qq: 'qqCookie' };
 const TTS_VIA_AUDIO = new Set(['L05B', 'L05C', 'LX04', 'LX01', 'S12', 'S12A']);
@@ -522,6 +532,94 @@ function musicStatus() {
   return { current: musicBox.current, providers: out };
 }
 
+/* ---------- 歌单连播 ---------- */
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function queueState() {
+  return {
+    running: playQueue.running,
+    paused: playQueue.paused,
+    index: playQueue.index,
+    total: playQueue.items.length,
+    current: playQueue.items[playQueue.index] || null,
+    title: playQueue.title,
+  };
+}
+
+function pushQueueState() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('playlist:progress', queueState());
+  }
+}
+
+async function resolveSongUrl(song) {
+  const picked = await musicOf(song.provider).songUrl(song.id);
+  let url = picked.url.replace(/^http:/, 'https:');
+  if (media && media.port) url = media.proxyUrl(song.provider, song.id, pickHost());
+  return { url, trial: !!picked.trial, br: picked.br || 0 };
+}
+
+async function stopQueue(waitMs = 6000) {
+  if (!playQueue.running) return;
+  playQueue.stopFlag = true;
+  const deadline = Date.now() + waitMs;
+  while (playQueue.running && Date.now() < deadline) await sleep(200);
+}
+
+async function waitSongEnd(dev) {
+  // 音箱播放状态：1=播放中 2=暂停 0/-1=空闲。连续两次非播放态视为播完。
+  let idle = 0;
+  await sleep(4000); // 起播缓冲
+  for (let i = 0; i < 3600; i++) {
+    if (playQueue.stopFlag) return;
+    let s = null;
+    try {
+      const st = await cloud.mina.status(dev.id);
+      s = st && typeof st.status === 'number' ? st.status : null;
+    } catch (_) { /* 状态获取失败按继续等待处理 */ }
+    if (s === 1) idle = 0;
+    else if (s !== null) {
+      idle += 1;
+      if (idle >= 2) return;
+    }
+    await sleep(3000);
+  }
+}
+
+async function playQueueLoop(dev) {
+  playQueue.running = true;
+  playQueue.stopFlag = false;
+  playQueue.paused = false;
+  log(`▶ 开始连播「${playQueue.title}」（共 ${playQueue.items.length} 首）`);
+  pushQueueState();
+  try {
+    while (!playQueue.stopFlag && playQueue.index < playQueue.items.length - 1) {
+      playQueue.index += 1;
+      const song = playQueue.items[playQueue.index];
+      try {
+        const { url, trial } = await resolveSongUrl(song);
+        const ok = await cloud.mina.playUrl(dev.id, url, dev.hardware);
+        if (!ok) throw new Error('音箱拒绝播放该音源');
+        log(`▶ 歌单 ${playQueue.index + 1}/${playQueue.items.length}：${song.name}${song.artists ? ` - ${song.artists}` : ''}${trial ? '（试听片段）' : ''}`);
+        pushQueueState();
+        await waitSongEnd(dev);
+      } catch (err) {
+        log(`⚠ 跳过「${song.name}」：${err.message}`);
+      }
+    }
+  } finally {
+    const stopped = playQueue.stopFlag;
+    playQueue.running = false;
+    playQueue.paused = false;
+    log(stopped ? '■ 已停止歌单连播' : '✓ 歌单连播完毕');
+    pushQueueState();
+  }
+}
+
+
 async function finishCloudLogin(account) {
   store.setAll({ miToken: account.token });
   const mina = new MinaService(account, {
@@ -718,9 +816,18 @@ function registerIpc() {
         if (!result) throw new Error('音箱拒绝了这条播放指令');
         return { ok: true, url };
       }
-      case 'pause': result = await mina.pause(dev.id); break;
-      case 'resume': result = await mina.play(dev.id); break;
-      case 'stop': result = await mina.stop(dev.id); break;
+      case 'pause':
+        result = await mina.pause(dev.id);
+        if (playQueue.running) { playQueue.paused = true; pushQueueState(); }
+        break;
+      case 'resume':
+        result = await mina.play(dev.id);
+        if (playQueue.running) { playQueue.paused = false; pushQueueState(); }
+        break;
+      case 'stop':
+        result = await mina.stop(dev.id);
+        if (playQueue.running) { playQueue.stopFlag = true; pushQueueState(); }
+        break;
       case 'status': {
         const st = await mina.status(dev.id);
         return { ok: true, status: st };
@@ -848,6 +955,51 @@ function registerIpc() {
       }
     }, 2500);
     return { ok: true, url, direct, trial: picked.trial, br: picked.br };
+  });
+
+  /* ---------- 平台歌单（直接读取账号里收藏的歌单） ---------- */
+
+  ipcMain.handle('music:playlists', async (_e, { provider } = {}) => {
+    const name = provider || musicBox.current;
+    if (PROVIDERS[name]) musicBox.current = name;
+    const list = await musicOf(name).playlists();
+    log(`${PROVIDERS[name].label}歌单：${list.length} 个`);
+    return list;
+  });
+
+  ipcMain.handle('music:playlistSongs', async (_e, { provider, id } = {}) => {
+    const name = provider || musicBox.current;
+    const songs = await musicOf(name).playlistSongs(id);
+    log(`已读取歌单内容：${songs.length} 首`);
+    return songs;
+  });
+
+  ipcMain.handle('queue:state', () => queueState());
+
+  ipcMain.handle('queue:play', async (_e, { title, songs, index = 0 } = {}) => {
+    const dev = requireDevice();
+    const list = (Array.isArray(songs) ? songs : []).filter((s) => s && s.id);
+    if (!list.length) throw new Error('这个歌单里没有可播放的歌曲');
+    await stopQueue();
+    const start = Math.max(0, Math.min(Number(index) || 0, list.length - 1));
+    playQueue.items = list.map((s) => ({
+      id: String(s.id),
+      name: s.name || '',
+      artists: s.artists || '',
+      provider: s.provider || musicBox.current,
+    }));
+    playQueue.index = start - 1;
+    playQueue.title = title || '歌单';
+    playQueueLoop(dev).catch((err) => log(`✗ 歌单连播异常：${err.message}`));
+    return queueState();
+  });
+
+  ipcMain.handle('queue:stop', async () => {
+    if (playQueue.running) {
+      playQueue.stopFlag = true;
+      log('■ 收到停止连播指令');
+    }
+    return queueState();
   });
 
   ipcMain.handle('media:pick', async () => {

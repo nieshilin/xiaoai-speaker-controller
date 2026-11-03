@@ -231,7 +231,7 @@
     state.playingSong = song;
     toast(`正在播放：${song.name}`);
     $('#playerTag').textContent = `播放中 · ${song.name}`;
-    const r = await run('播放', () => api.playSong({ id: song.id, name: `${song.name} - ${song.artists}`, provider: state.provider }));
+    const r = await run('播放', () => api.playSong({ id: song.id, name: `${song.name} - ${song.artists}`, provider: song.provider || state.provider }));
     if (r && r.trial) toast('这是试听片段，填 Cookie 可播完整版', 'err');
   }
 
@@ -315,6 +315,7 @@
     }
     const info = state.music[state.provider] || { label: '音源', loggedIn: false };
     $('#musicTag').textContent = info.loggedIn ? '已登录' : '未登录';
+    if ($('#plProvider')) $('#plProvider').textContent = info.label || '音源';
     $('#btnMusicLogin').textContent = info.loggedIn ? '切换账号' : '登录账号';
     $('#btnMusicLogout').classList.toggle('hidden', !info.loggedIn);
     $('#musicCookie').placeholder = state.provider === 'qq'
@@ -332,6 +333,13 @@
     applyMusicState(st);
     state.songs = [];
     $('#songList').innerHTML = `<li class="empty">已切换到${(st.providers[name] || {}).label || name}，输入关键词搜索。</li>`;
+    // 歌单随音源切换重新读取
+    pl.list = [];
+    pl.id = null;
+    pl.songs = [];
+    pl.loadedFor = '';
+    renderPlSelect();
+    renderPlSongs();
   }
 
   async function musicLogin() {
@@ -346,6 +354,8 @@
     if (!st) return;
     applyMusicState(st);
     toast('登录成功', 'ok');
+    pl.loadedFor = '';
+    loadPlatformPlaylists(true);
   }
 
   async function musicLogout() {
@@ -365,6 +375,158 @@
     toast(r.hasCookie ? 'Cookie 已保存' : 'Cookie 已清除', 'ok');
   }
 
+  /* ---------- 平台歌单（读取账号里收藏的歌单） ---------- */
+
+  const pl = { list: [], id: null, songs: [], loadedFor: '' };
+
+  function currentPl() {
+    return pl.list.find((p) => p.id === pl.id) || null;
+  }
+
+  function renderPlSelect() {
+    const sel = $('#plSelect');
+    sel.innerHTML = '';
+    if (!pl.list.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '还没有读取到歌单';
+      sel.appendChild(opt);
+      sel.disabled = true;
+      pl.id = null;
+      return;
+    }
+    sel.disabled = false;
+    for (const p of pl.list) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.name}（${p.count} 首）`;
+      sel.appendChild(opt);
+    }
+    sel.value = pl.id || pl.list[0].id;
+    pl.id = sel.value;
+  }
+
+  function renderPlSongs() {
+    const list = $('#plSongs');
+    list.innerHTML = '';
+    const cur = currentPl();
+    if (!cur) {
+      list.innerHTML = '<li class="empty">登录音乐账号后点「刷新歌单」，这里会列出你在平台上收藏的全部歌单。</li>';
+      return;
+    }
+    if (!pl.songs.length) {
+      list.innerHTML = '<li class="empty">这个歌单还没有歌曲，或全部无法读取。</li>';
+      return;
+    }
+    pl.songs.forEach((s, idx) => {
+      const li = document.createElement('li');
+      li.className = 'song';
+      const num = document.createElement('span');
+      num.className = 'song-index';
+      num.textContent = String(idx + 1);
+      const main = document.createElement('div');
+      main.className = 'song-main';
+      const title = document.createElement('div');
+      title.className = 'song-title';
+      title.textContent = s.name;
+      if (s.vip) {
+        const vip = document.createElement('span');
+        vip.className = 'vip';
+        vip.textContent = 'VIP';
+        title.appendChild(document.createTextNode(' '));
+        title.appendChild(vip);
+      }
+      const sub = document.createElement('div');
+      sub.className = 'song-sub';
+      sub.textContent = [s.artists, s.album].filter(Boolean).join(' · ');
+      main.appendChild(title);
+      main.appendChild(sub);
+      const play = document.createElement('button');
+      play.className = 'btn ghost sm';
+      play.textContent = '播放';
+      play.onclick = (e) => { e.stopPropagation(); playSong(s); };
+      const from = document.createElement('button');
+      from.className = 'btn ghost sm';
+      from.textContent = '从这里连播';
+      from.title = '从这首开始连播整张歌单';
+      from.onclick = (e) => { e.stopPropagation(); plPlayFrom(idx); };
+      li.appendChild(num);
+      li.appendChild(main);
+      li.appendChild(from);
+      li.appendChild(play);
+      li.onclick = () => playSong(s);
+      list.appendChild(li);
+    });
+  }
+
+  async function loadPlSongs(id) {
+    const cur = currentPl();
+    $('#plSongs').innerHTML = '<li class="empty">正在读取歌单…</li>';
+    const songs = await run('读取歌单歌曲', () => api.playlistSongs(state.provider, id));
+    if (!songs) {
+      pl.songs = [];
+      $('#plSongs').innerHTML = '<li class="empty">读取失败，检查登录状态后重试。</li>';
+      return;
+    }
+    pl.songs = songs.map((s) => ({ ...s, provider: state.provider }));
+    renderPlSongs();
+    if (cur) addLog(`${(state.music[state.provider] || {}).label || state.provider}「${cur.name}」共 ${pl.songs.length} 首`);
+  }
+
+  async function loadPlatformPlaylists(force) {
+    const info = state.music[state.provider] || {};
+    if (!info.loggedIn) {
+      toast(`先登录${info.label || '音乐账号'}才能读取歌单`, 'err');
+      addLog(`读取歌单失败：${info.label || '音乐账号'}未登录`);
+      return;
+    }
+    if (!force && pl.loadedFor === state.provider && pl.list.length) return;
+    const btn = $('#btnPlRefresh');
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = '读取中…';
+    const list = await run('读取歌单', () => api.playlistList(state.provider));
+    btn.disabled = false;
+    btn.textContent = label;
+    if (!list) return;
+    pl.list = list;
+    pl.loadedFor = state.provider;
+    pl.id = list.length ? list[0].id : null;
+    renderPlSelect();
+    if (pl.id) await loadPlSongs(pl.id);
+    else { pl.songs = []; renderPlSongs(); }
+    toast(list.length ? `读到 ${list.length} 个歌单` : '账号里没有歌单', list.length ? 'ok' : 'err');
+  }
+
+  async function plPlayFrom(idx) {
+    if (!pl.songs.length) { toast('先选择一个歌单'); return; }
+    if (!state.connected) { toast('先扫码登录并选择音箱', 'err'); return; }
+    const cur = currentPl();
+    const title = cur ? cur.name : '歌单';
+    const r = await run('播放歌单', () => api.queuePlay(title, pl.songs, idx));
+    if (r) toast(`从第 ${idx + 1} 首开始连播「${title}」`, 'ok');
+  }
+
+  async function plPlayAll() {
+    await plPlayFrom(0);
+  }
+
+  async function plStop() {
+    const r = await run('停止连播', () => api.queueStop());
+    if (r) toast('已停止连播', 'ok');
+  }
+
+  function applyQueueState(q) {
+    if (!q) return;
+    if (q.running && q.current) {
+      $('#playerTag').textContent = `连播 ${q.index + 1}/${q.total} · ${q.current.name}`;
+    } else if (!q.running && q.total) {
+      $('#playerTag').textContent = '待机';
+    }
+  }
+
+
+
   const about = { info: null, result: null, checking: false };
 
   function showView(name) {
@@ -379,6 +541,7 @@
     for (const view of document.querySelectorAll('.view')) {
       view.classList.toggle('active', view.id === `view-${name}`);
     }
+    if (name === 'music') loadPlatformPlaylists(false);
   }
 
   const speech = { voices: [] };
@@ -637,6 +800,15 @@
     };
     $('#btnCookieSave').onclick = saveCookie;
     $('#musicCookie').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveCookie(); });
+
+    $('#btnPlRefresh').onclick = () => loadPlatformPlaylists(true);
+    $('#btnPlPlayAll').onclick = plPlayAll;
+    $('#btnPlStop').onclick = plStop;
+    $('#plSelect').onchange = async () => {
+      pl.id = $('#plSelect').value || null;
+      if (pl.id) await loadPlSongs(pl.id);
+    };
+    api.onQueueProgress(applyQueueState);
 
     $('#btnPick').onclick = pickFiles;
     $('#btnPrev').onclick = () => step(-1);

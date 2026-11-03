@@ -58,7 +58,7 @@
           <span>关于应用</span>
         </button>
         <button class="version" id="version" type="button" title="关于应用 / 检查更新">
-          <span id="versionText">v2.4.1</span>
+          <span id="versionText">v2.4.3</span>
           <i class="badge hidden" id="updateBadge"></i>
         </button>
       </div>
@@ -193,6 +193,29 @@
 
           <div class="card">
             <div class="card-head">
+              <h2>平台歌单</h2>
+              <div class="row gap tight">
+                <button class="btn ghost sm" id="btnPlRefresh" type="button">刷新歌单</button>
+                <button class="btn primary sm" id="btnPlPlayAll" type="button">▶ 播放全部</button>
+                <button class="btn ghost sm" id="btnPlStop" type="button">■ 停止连播</button>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>账号里的歌单（<span id="plProvider">网易云音乐</span>）</span>
+              <select id="plSelect">
+                <option value="">登录音乐账号后点「刷新歌单」</option>
+              </select>
+            </label>
+
+            <ul class="song-list" id="plSongs">
+              <li class="empty">登录音乐账号后点「刷新歌单」，这里会列出你在平台上收藏的全部歌单。</li>
+            </ul>
+            <p class="hint">歌单直接读自音乐平台账号（含「我喜欢」等系统歌单）；「播放全部」会从第一首开始连播，播完自动下一首，不可播放的自动跳过。</p>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
               <h2>本地音乐</h2>
               <div class="row gap tight">
                 <button class="btn ghost sm" id="btnPrev">上一首</button>
@@ -265,7 +288,7 @@
           <rect x="14.5" y="34.4" width="12" height="3.2" rx="1.6" fill="#fff" opacity="0.6" />
         </svg>
         <div class="about-title">
-          <h2 id="aboutTitle">小爱音箱控制台 <span id="aboutVersion">v2.4.1</span></h2>
+          <h2 id="aboutTitle">小爱音箱控制台 <span id="aboutVersion">v2.4.3</span></h2>
           <p id="aboutDesc">云端 MiNA 通道 · 在线音乐与本地音乐</p>
         </div>
         <button class="btn ghost sm" id="btnAboutClose" type="button">关闭</button>
