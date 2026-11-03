@@ -576,6 +576,12 @@ async function waitSongEnd(dev) {
   await sleep(4000); // 起播缓冲
   for (let i = 0; i < 3600; i++) {
     if (playQueue.stopFlag) return;
+    // 用户点了暂停：不算播完，保持当前曲目等待恢复（否则会误判为空闲而跳下一首）
+    if (playQueue.paused) {
+      idle = 0;
+      await sleep(1000);
+      continue;
+    }
     let s = null;
     try {
       const st = await cloud.mina.status(dev.id);
@@ -596,12 +602,16 @@ async function playQueueLoop(dev) {
   playQueue.paused = false;
   log(`▶ 开始连播「${playQueue.title}」（共 ${playQueue.items.length} 首）`);
   pushQueueState();
+  let hinted = false;
   try {
     while (!playQueue.stopFlag && playQueue.index < playQueue.items.length - 1) {
       playQueue.index += 1;
       const song = playQueue.items[playQueue.index];
       try {
+        if (playQueue.stopFlag) break;
         const { url, trial } = await resolveSongUrl(song);
+        // 取址是网络请求，期间用户可能已经点了「停止连播」，别再下发下一首
+        if (playQueue.stopFlag) break;
         const ok = await cloud.mina.playUrl(dev.id, url, dev.hardware);
         if (!ok) throw new Error('音箱拒绝播放该音源');
         log(`▶ 歌单 ${playQueue.index + 1}/${playQueue.items.length}：${song.name}${song.artists ? ` - ${song.artists}` : ''}${trial ? '（试听片段）' : ''}`);
@@ -609,6 +619,12 @@ async function playQueueLoop(dev) {
         await waitSongEnd(dev);
       } catch (err) {
         log(`⚠ 跳过「${song.name}」：${err.message}`);
+        if (!hinted) {
+          hinted = true;
+          if (/会员|VIP|权限|登录|Cookie|音源/i.test(err.message)) {
+            log('提示：请检查音乐账号是否已登录，建议重新登录，并确认该账号有对应的 VIP 权益');
+          }
+        }
       }
     }
   } finally {
@@ -819,11 +835,11 @@ function registerIpc() {
       }
       case 'pause':
         result = await mina.pause(dev.id);
-        if (playQueue.running) { playQueue.paused = true; pushQueueState(); }
+        if (result && playQueue.running) { playQueue.paused = true; pushQueueState(); }
         break;
       case 'resume':
         result = await mina.play(dev.id);
-        if (playQueue.running) { playQueue.paused = false; pushQueueState(); }
+        if (result && playQueue.running) { playQueue.paused = false; pushQueueState(); }
         break;
       case 'stop':
         result = await mina.stop(dev.id);
@@ -957,8 +973,10 @@ function registerIpc() {
     log(`✓ 已让音箱播放：${name || id}`);
     setTimeout(async () => {
       try {
+        // status=2 是暂停（可能是用户刚点的），只有空闲/未知才提示「未进入播放态」
+        if (playQueue.paused) return;
         const st = await cloud.mina.status(dev.id);
-        if (st.status !== 1) log(`⚠ 音箱未进入播放态（status=${st.status}），请检查电脑与音箱是否同一局域网、防火墙是否放行 ${media ? media.port : 8931} 端口`);
+        if (st.status !== 1 && st.status !== 2) log(`⚠ 音箱未进入播放态（status=${st.status}），请检查电脑与音箱是否同一局域网、防火墙是否放行 ${media ? media.port : 8931} 端口`);
       } catch (_) {
         /* 状态探测失败不影响播放 */
       }

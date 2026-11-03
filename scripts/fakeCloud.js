@@ -64,11 +64,17 @@ function startFakeCloud({ port = 0, host = '127.0.0.1' } = {}) {
         const form = new URLSearchParams(body);
         const method = form.get('method');
         const message = form.get('message') || '{}';
+        let msg = {};
+        try { msg = JSON.parse(message) || {}; } catch (_) { msg = {}; }
         seen.push({ method, message });
         let info = null;
         if (method === 'player_play_music' || method === 'player_play_url') fake.playing = true;
+        if (method === 'player_play_operation') {
+          if (msg.action === 'pause' || msg.action === 'stop') fake.playing = false;
+          if (msg.action === 'play') fake.playing = true;
+        }
         if (method === 'player_set_volume') {
-          const vol = Number(new URLSearchParams(message).get('volume') || form.get('volume'));
+          const vol = Number(msg.volume !== undefined ? msg.volume : (new URLSearchParams(message).get('volume') || form.get('volume')));
           if (Number.isFinite(vol)) fake.volume = Math.max(0, Math.min(100, vol));
         }
         if (method === 'player_get_play_status') {
@@ -116,11 +122,40 @@ function startFakeCloud({ port = 0, host = '127.0.0.1' } = {}) {
       }
       if (p === '/cgi-bin/musicu.fcg') {
         const payload = JSON.parse(body || '{}');
+        const block = payload.req || payload.req_0 || {};
+        // 账号歌单列表
+        if (block.module === 'music.musicasset.PlaylistBaseRead') {
+          seen.push({ method: 'qq_playlists', message: JSON.stringify(block.param || {}) });
+          return json({
+            req: {
+              code: 0,
+              data: {
+                v_playlist: [
+                  { tid: 'fake-pl-1', dirName: '我喜欢', songNum: 2, nick: '测试账号' },
+                  { tid: 'fake-pl-2', dirName: '通勤歌单', songNum: 2, nick: '测试账号' },
+                ],
+              },
+            },
+          });
+        }
         const param = (payload.req_0 || {}).param || {};
         const mid = (param.songmid || ['qq-mid-1'])[0];
         seen.push({ method: 'qq_vkey', message: JSON.stringify(param) });
         return json({
           req_0: { code: 0, data: { sip: ['http://aqqmusic.tc.qq.com/'], midurlinfo: [{ songmid: mid, purl: `M500${mid}.mp3?vkey=FAKE`, result: 0 }] } },
+        });
+      }
+      if (p === '/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg') {
+        const disstid = new URL('http://x' + req.url).searchParams.get('disstid') || '';
+        seen.push({ method: 'qq_playlist_songs', message: disstid });
+        return json({
+          cdlist: [{
+            disstid,
+            songlist: [
+              { songmid: 'qq-mid-1', songname: '晴天', singer: [{ name: '周杰伦' }], albumname: '叶惠美', interval: 269 },
+              { songmid: 'qq-mid-2', songname: '稻香', singer: [{ name: '周杰伦' }], albumname: '魔杰座', interval: 223 },
+            ],
+          }],
         });
       }
       if (p === '/lyric/fcgi-bin/fcg_query_lyric_new.fcg') {

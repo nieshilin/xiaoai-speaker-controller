@@ -35,11 +35,11 @@ const DOWNLOAD_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoai-e2e-downloads
   const child = spawn(electron, ['.', '--e2e'], { cwd: ROOT, env, stdio: 'inherit' });
 
   const timer = setTimeout(() => {
-    console.error('\nE2E 超时（90s），强制结束');
+    console.error('\nE2E 超时（150s），强制结束');
     try { child.kill(); } catch (_) { /* ignore */ }
     fake.close();
     process.exit(1);
-  }, 90000);
+  }, 150000);
 
   child.on('exit', async (code) => {
     clearTimeout(timer);

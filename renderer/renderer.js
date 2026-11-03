@@ -27,12 +27,12 @@
   }
 
   let toastTimer = null;
-  function toast(msg, type) {
+  function toast(msg, type, ms) {
     const el = $('#toast');
     el.textContent = msg;
     el.className = `toast show${type ? ' ' + type : ''}`;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.className = 'toast'; }, 2600);
+    toastTimer = setTimeout(() => { el.className = 'toast'; }, ms || (type === 'err' ? 4200 : 2600));
   }
 
   function setStatus(kind, text) {
@@ -51,14 +51,19 @@
     return String((err && err.message) || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
   }
 
-  async function run(label, fn) {
+  const LOGIN_HINT = '请检查音乐账号是否已登录，建议重新登录，并确认该账号有对应的 VIP 权益';
+
+  async function run(label, fn, opts) {
     try {
       return await fn();
     } catch (err) {
       const why = friendly(err);
       addLog(`✗ ${label}失败：${why}`, 'err');
+      const hint = opts && opts.hint ? opts.hint : '';
+      if (hint) addLog(`提示：${hint}`, 'err');
       // 提示里带上具体原因（如版权限制），避免只看到「播放失败」不知道为什么
-      toast(`${label}失败：${why.length > 64 ? why.slice(0, 64) + '…' : why}`, 'err');
+      const reason = why.length > 72 ? why.slice(0, 72) + '…' : why;
+      toast(hint ? `${label}失败：${reason}\n${hint}` : `${label}失败：${reason}`, 'err', hint ? 6000 : 4200);
       return null;
     }
   }
@@ -237,7 +242,7 @@
     state.playingSong = song;
     toast(`正在播放：${song.name}`);
     $('#playerTag').textContent = `播放中 · ${song.name}`;
-    const r = await run('播放', () => api.playSong({ id: song.id, name: `${song.name} - ${song.artists}`, provider: song.provider || state.provider }));
+    const r = await run('播放', () => api.playSong({ id: song.id, name: `${song.name} - ${song.artists}`, provider: song.provider || state.provider }), { hint: LOGIN_HINT });
     if (r && r.trial) toast('这是试听片段，填 Cookie 可播完整版', 'err');
   }
 
@@ -525,7 +530,7 @@
   async function loadPlSongs(id) {
     const cur = currentPl();
     $('#plSongs').innerHTML = '<li class="empty">正在读取歌单…</li>';
-    const songs = await run('读取歌单歌曲', () => api.playlistSongs(state.provider, id));
+    const songs = await run('读取歌单歌曲', () => api.playlistSongs(state.provider, id), { hint: LOGIN_HINT });
     if (!songs) {
       pl.songs = [];
       $('#plSongs').innerHTML = '<li class="empty">读取失败，检查登录状态后重试。</li>';
@@ -548,7 +553,7 @@
     btn.disabled = true;
     const label = btn.textContent;
     btn.textContent = '读取中…';
-    const list = await run('读取歌单', () => api.playlistList(state.provider));
+    const list = await run('读取歌单', () => api.playlistList(state.provider), { hint: LOGIN_HINT });
     btn.disabled = false;
     btn.textContent = label;
     if (!list) return;
@@ -566,7 +571,7 @@
     if (!state.connected) { toast('先扫码登录并选择音箱', 'err'); return; }
     const cur = currentPl();
     const title = cur ? cur.name : '歌单';
-    const r = await run('播放歌单', () => api.queuePlay(title, pl.songs, idx));
+    const r = await run('播放歌单', () => api.queuePlay(title, pl.songs, idx), { hint: LOGIN_HINT });
     if (r) toast(`从第 ${idx + 1} 首开始连播「${title}」`, 'ok');
   }
 
@@ -582,7 +587,10 @@
   function applyQueueState(q) {
     if (!q) return;
     if (q.running && q.current) {
-      $('#playerTag').textContent = `连播 ${q.index + 1}/${q.total} · ${q.current.name}`;
+      const name = q.current.name || '';
+      $('#playerTag').textContent = q.paused
+        ? `已暂停 · ${name}`
+        : `连播 ${q.index + 1}/${q.total} · ${name}`;
     } else if (!q.running && q.total) {
       $('#playerTag').textContent = '待机';
     }

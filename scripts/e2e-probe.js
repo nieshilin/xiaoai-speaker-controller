@@ -82,6 +82,42 @@ module.exports = function runE2E(win, app) {
       const qqPlayed = await until(`document.getElementById('log').textContent.includes('已让音箱播放')`);
       add('QQ 音乐 → 解析音源并下发', qqPlayed);
 
+      // 用假 Cookie 让 QQ 音源进入「已登录」，供歌单与连播测试使用（云端为本地模拟）
+      await js(`(() => {
+        document.getElementById('btnCookiePanel').click();
+        document.getElementById('musicCookie').value = 'uin=1000000001; qm_keyst=' + 'F'.repeat(60);
+        document.getElementById('btnCookieSave').click();
+        return true;
+      })()`);
+      const qqLoggedIn = await until(`document.getElementById('musicTag').textContent.trim() === '已登录'`, 8000);
+      add('粘贴 Cookie → 音源显示已登录', qqLoggedIn, await js(`document.getElementById('musicTag').textContent`));
+
+      // 平台歌单：读取 + 连播 + 暂停不跳下一首
+      await js(`document.getElementById('btnPlRefresh').click(); true`);
+      const plLoaded = await until(`document.querySelectorAll('#plSelect option').length >= 1 && document.querySelectorAll('#plSongs li.song').length >= 2`, 12000);
+      const plCount = await js(`document.querySelectorAll('#plSelect option').length`);
+      add('读取平台歌单 → 歌单与歌曲列表', plLoaded, `歌单 ${plCount} 个`);
+
+      await js(`document.getElementById('btnPlPlayAll').click(); true`);
+      const queueStarted = await until(`/▶ 歌单 1\\//.test(document.getElementById('log').textContent)`, 12000);
+      add('播放全部 → 开始连播', queueStarted);
+
+      await js(`document.getElementById('btnPause').click(); true`);
+      await wait(1500);
+      const pausedTag = await js(`document.getElementById('playerTag').textContent`);
+      const tracksBefore = await js(`(document.getElementById('log').textContent.match(/▶ 歌单 /g) || []).length`);
+      await wait(12000); // 起播缓冲 4s + 两轮状态轮询 6s，足够暴露「暂停后自动跳歌」
+      const tracksAfter = await js(`(document.getElementById('log').textContent.match(/▶ 歌单 /g) || []).length`);
+      add('连播中暂停 → 不自动播下一首',
+        tracksBefore === tracksAfter && /已暂停/.test(pausedTag),
+        `${pausedTag.trim()} · 曲目 ${tracksBefore}→${tracksAfter}`);
+
+      await js(`document.getElementById('btnResume').click(); true`);
+      await wait(800);
+      await js(`document.getElementById('btnPlStop').click(); true`);
+      const queueStopped = await until(`document.getElementById('log').textContent.includes('已停止歌单连播')`, 10000);
+      add('停止连播 → 队列结束', queueStopped);
+
       await js(`document.querySelector('#segProvider .seg-btn[data-provider="netease"]').click(); true`);
       const backNetease = await until(`document.querySelector('#segProvider .seg-btn[data-provider="netease"]').classList.contains('active')`);
       add('切回网易云音乐', backNetease);

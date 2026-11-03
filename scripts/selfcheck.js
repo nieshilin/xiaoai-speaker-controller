@@ -448,6 +448,20 @@ function checkVolumeSync() {
   else fail('音量回写链路', new Error('渲染层或主进程未接入音量同步'));
 }
 
+function checkQueueGuards() {
+  const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const renderer = fs.readFileSync(path.join(ROOT, 'renderer/renderer.js'), 'utf8');
+  const pauseGuard = /if \(playQueue\.paused\)[\s\S]{0,140}?continue;/.test(main);
+  const stopGuard = (main.match(/if \(playQueue\.stopFlag\) break;/g) || []).length >= 2;
+  const pausedLabel = renderer.includes('已暂停 · ');
+  const pauseNotWarned = /st\.status !== 1 && st\.status !== 2/.test(main);
+  if (pauseGuard && stopGuard && pausedLabel && pauseNotWarned) {
+    ok('连播：暂停不跳歌 / 停止后不再下发 / 暂停不误报未播放');
+  } else {
+    fail('连播保护', new Error(JSON.stringify({ pauseGuard, stopGuard, pausedLabel, pauseNotWarned })));
+  }
+}
+
 function checkProviders() {
   try {
     const n = providerFor('netease', { cookie: '' });
@@ -687,22 +701,24 @@ async function checkUpdater() {
 
 (async () => {
   console.log('小爱音箱控制台 · 自检\n');
-  console.log('[1/7] 语法');
+  console.log('[1/8] 语法');
   try { checkSyntax(); } catch (err) { fail('语法检查', err); }
-  console.log('[2/7] MiNA 云端通道');
+  console.log('[2/8] MiNA 云端通道');
   try { await checkMina(); } catch (err) { fail('MiNA 云端通道', err); }
   try { await checkQrLogin(); } catch (err) { fail('扫码登录', err); }
-  console.log('[3/7] 在线音乐（网易云）');
+  console.log('[3/8] 在线音乐（网易云）');
   await checkMusic();
-  console.log('[4/7] 在线音乐（QQ 音乐）');
+  console.log('[4/8] 在线音乐（QQ 音乐）');
   await checkQQMusic();
   checkProviders();
   checkCookieTools();
-  console.log('[5/7] 音量同步（issue #2）');
+  console.log('[5/8] 音量同步（issue #2）');
   try { checkVolumeSync(); } catch (err) { fail('音量同步', err); }
-  console.log('[6/7] 本地媒体服务');
+  console.log('[6/8] 连播队列保护');
+  try { checkQueueGuards(); } catch (err) { fail('连播队列保护', err); }
+  console.log('[7/8] 本地媒体服务');
   await checkMediaServer();
-  console.log('[7/7] 版本更新');
+  console.log('[8/8] 版本更新');
   try { await checkUpdater(); } catch (err) { fail('版本更新', err); }
 
   const bad = results.filter((r) => !r.ok);
