@@ -55,8 +55,10 @@
     try {
       return await fn();
     } catch (err) {
-      addLog(`✗ ${label}失败：${friendly(err)}`, 'err');
-      toast(`${label}失败`, 'err');
+      const why = friendly(err);
+      addLog(`✗ ${label}失败：${why}`, 'err');
+      // 提示里带上具体原因（如版权限制），避免只看到「播放失败」不知道为什么
+      toast(`${label}失败：${why.length > 64 ? why.slice(0, 64) + '…' : why}`, 'err');
       return null;
     }
   }

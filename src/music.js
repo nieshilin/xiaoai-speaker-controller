@@ -349,7 +349,7 @@ class QQMusic {
     if (!out.fallback && file.mediaMid !== mid) out = await attempt(mid);
     if (out.fallback) return out.fallback;
     if (out.reason === 104003) {
-      throw new Error('这首歌需要 QQ 音乐会员，或账号无权播放（未登录同样如此），请登录会员账号再试');
+      throw new Error('这首歌需要 QQ 音乐会员或付费权限（与 Cookie 无关，登录态正常也会遇到），可换一首免费歌，或点「播放全部」自动跳过受限歌曲');
     }
     throw new Error('这首歌没有可播放的音源，换一首或登录后再试');
   }
