@@ -20,6 +20,13 @@ function startFakeCloud({ port = 0, host = '127.0.0.1' } = {}) {
       };
       const base = `http://${host}:${server.address().port}`;
 
+      if (p === '/__control') {
+        // 测试辅助：模拟手机 APP 在别处改动音箱音量（只动设备，不动界面）
+        const vol = Number(url.searchParams.get('volume'));
+        if (Number.isFinite(vol)) fake.volume = Math.max(0, Math.min(100, vol));
+        if (url.searchParams.get('playing') !== null) fake.playing = url.searchParams.get('playing') === '1';
+        return json({ playing: fake.playing, volume: fake.volume });
+      }
       if (p === '/longPolling/loginUrl') {
         return json({ lp: `${base}/lp`, qr: `${base}/qr.png`, timeout: 300 });
       }

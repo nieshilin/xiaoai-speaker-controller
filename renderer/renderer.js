@@ -121,6 +121,9 @@
     $('#nowDeviceSub').textContent = `${opt.dataset.hardware || '未知型号'} · ${opt.value}`;
     setStatus('on', `已连接 · ${r.name}`);
     toast(`已连接 ${r.name}`, 'ok');
+    // 连上后立刻对齐一次设备真实音量，之后每 8 秒轮询同步（手机 APP 改动也能反映到界面）
+    startStatusPolling();
+    pollStatus();
   }
 
   async function qrLogin() {
@@ -157,6 +160,7 @@
   }
 
   async function logout() {
+    stopStatusPolling();
     await run('退出登录', () => api.cloudLogout());
     state.connected = false;
     state.devices = [];
@@ -282,15 +286,69 @@
   }
 
   let volumeTimer = null;
+  let volumeTouch = 0;      // 用户最后一次拖动滑块的时刻，期间不覆盖界面
+  let statusTimer = null;
+
+  // 把音量写进滑块/数字，返回界面是否真的发生了变化
+  function paintVolume(value) {
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return false;
+    const n = Math.max(0, Math.min(100, Math.round(raw)));
+    const el = $('#volume');
+    const changed = Number(el.value) !== n;
+    el.value = String(n);
+    const label = $('#volumeVal');
+    if (label.textContent !== String(n)) label.textContent = String(n);
+    paintRange();
+    return changed;
+  }
+
+  // 设备端（手机 APP、语音指令）改了音量后，把界面拉回真实值
+  function syncVolumeFromDevice(value, opts) {
+    const raw = Number(value);
+    if (!Number.isFinite(raw) || raw < 0 || raw > 100) return false;
+    if (Date.now() - volumeTouch < 1500) return false; // 正在拖动，别抢用户的输入
+    const changed = paintVolume(raw);
+    if (changed && opts && opts.log) {
+      addLog(`检测到设备音量已变为 ${Math.round(raw)}，界面已同步`, 'ok');
+    }
+    return changed;
+  }
+
   async function onVolumeInput() {
     const v = Number($('#volume').value);
+    volumeTouch = Date.now();
     $('#volumeVal').textContent = String(v);
     paintRange();
     if (!state.connected) return;
     clearTimeout(volumeTimer);
     volumeTimer = setTimeout(() => {
+      volumeTouch = Date.now();
       api.action('volume', v).catch((err) => addLog(`✗ 设置音量失败：${friendly(err)}`, 'err'));
     }, 220);
+  }
+
+  // 轮询设备状态：手机 APP 改音量后不用手动点「刷新状态」也能同步
+  async function pollStatus() {
+    if (!state.connected || document.hidden) return;
+    try {
+      const r = await api.action('status');
+      const st = (r && r.status) || {};
+      const v = r && r.volume !== undefined ? r.volume : st.volume;
+      syncVolumeFromDevice(v, { log: true });
+    } catch (_) {
+      /* 轮询失败静默处理，避免刷日志 */
+    }
+  }
+
+  function startStatusPolling() {
+    stopStatusPolling();
+    statusTimer = setInterval(pollStatus, 8000);
+  }
+
+  function stopStatusPolling() {
+    if (statusTimer) clearInterval(statusTimer);
+    statusTimer = null;
   }
 
   async function simpleAction(action, label) {
@@ -298,8 +356,11 @@
     if (!r) return;
     if (action === 'status') {
       const st = r.status || {};
-      addLog(`播放状态：status=${st.status} 音量=${st.volume}`, 'ok');
-      toast(`状态 ${st.status === 2 ? '在播' : '待机'} · 音量 ${st.volume}`);
+      const v = r.volume !== undefined ? r.volume : st.volume;
+      const changed = syncVolumeFromDevice(v, { log: true });
+      addLog(`播放状态：status=${st.status} 音量=${v !== undefined && v !== null ? v : '未知'}`, 'ok');
+      const shown = Number($('#volume').value);
+      toast(`状态 ${st.status === 2 ? '在播' : '待机'} · 音量 ${Number.isFinite(Number(v)) ? shown : '未知'}${changed ? '（已同步）' : ''}`);
       return;
     }
     toast(`${label}已下发`, 'ok');
@@ -825,6 +886,14 @@
     $('#btnStop').onclick = () => simpleAction('stop', '停止');
     $('#btnStatus').onclick = () => simpleAction('status', '查询状态');
     $('#volume').addEventListener('input', onVolumeInput);
+    // 手指/鼠标按住滑块期间也不让轮询覆盖
+    $('#volume').addEventListener('pointerdown', () => { volumeTouch = Date.now(); });
+
+    // 从手机 APP 切回窗口时立刻对齐音量，不用等下一轮轮询
+    window.addEventListener('focus', () => { if (state.connected) pollStatus(); });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && state.connected) pollStatus();
+    });
 
     for (const btn of document.querySelectorAll('.rail-btn[data-view]')) {
       btn.onclick = () => showView(btn.dataset.view);

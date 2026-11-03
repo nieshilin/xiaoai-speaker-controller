@@ -10,6 +10,7 @@ const { PROVIDERS, providerFor, NETEASE_BASE, QQ_BASE } = require('./src/music')
 const { MediaServer } = require('./src/mediaServer');
 const { synthesize, MAX_TOTAL } = require('./src/speech');
 const { Store } = require('./src/store');
+const { normalizeVolume } = require('./src/volumeSync');
 const {
   DEFAULT_REPO,
   DEFAULT_API,
@@ -830,7 +831,15 @@ function registerIpc() {
         break;
       case 'status': {
         const st = await mina.status(dev.id);
-        return { ok: true, status: st };
+        // 手机 APP / 语音指令改过音量后，查询到的是设备真实值：
+        // 归一化后回写，渲染层据此同步滑块（对应 issue #2：UI 不同步）
+        const rawVol = st && typeof st === 'object' ? st.volume : undefined;
+        const vol = normalizeVolume(rawVol);
+        if (vol !== null) {
+          if (st && typeof st === 'object') st.volume = vol;
+          store.set('volume', vol);
+        }
+        return { ok: true, status: st, volume: vol };
       }
       case 'tts': {
         const text = String(value || '').trim();

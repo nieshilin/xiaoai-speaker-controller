@@ -419,6 +419,35 @@ function checkCookieTools() {
   }
 }
 
+function checkVolumeSync() {
+  const { normalizeVolume, needsUiSync } = require('../src/volumeSync');
+  const cases = [
+    [42, 42],
+    ['55', 55],
+    [' 60 % ', 60],
+    [{ volume: 33 }, 33],
+    [0, 0],
+    [100, 100],
+  ];
+  const bad = cases.filter(([raw, want]) => normalizeVolume(raw) !== want);
+  const nulls = [-1, 101, '', null, undefined, 'abc', {}, NaN].filter((raw) => normalizeVolume(raw) !== null);
+  if (!bad.length && !nulls.length) ok('设备音量归一化（数字 / 字符串 / 对象 / 越界值）');
+  else fail('设备音量归一化', new Error(JSON.stringify({ bad, nulls })));
+
+  const decide = needsUiSync(40, 55) && !needsUiSync(55, 55) && !needsUiSync(55, -1) && needsUiSync(NaN, 30);
+  if (decide) ok('界面音量是否需要同步的判定');
+  else fail('界面音量是否需要同步的判定', new Error('判定结果异常'));
+
+  const renderer = fs.readFileSync(path.join(ROOT, 'renderer/renderer.js'), 'utf8');
+  const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8');
+  const wired = renderer.includes('syncVolumeFromDevice')
+    && renderer.includes('startStatusPolling')
+    && /label\.textContent = String\(n\)/.test(renderer)
+    && /case 'status'[\s\S]{0,400}normalizeVolume/.test(main);
+  if (wired) ok('刷新状态 / 轮询把设备音量回写到滑块（issue #2）');
+  else fail('音量回写链路', new Error('渲染层或主进程未接入音量同步'));
+}
+
 function checkProviders() {
   try {
     const n = providerFor('netease', { cookie: '' });
@@ -658,20 +687,22 @@ async function checkUpdater() {
 
 (async () => {
   console.log('小爱音箱控制台 · 自检\n');
-  console.log('[1/6] 语法');
+  console.log('[1/7] 语法');
   try { checkSyntax(); } catch (err) { fail('语法检查', err); }
-  console.log('[2/6] MiNA 云端通道');
+  console.log('[2/7] MiNA 云端通道');
   try { await checkMina(); } catch (err) { fail('MiNA 云端通道', err); }
   try { await checkQrLogin(); } catch (err) { fail('扫码登录', err); }
-  console.log('[3/6] 在线音乐（网易云）');
+  console.log('[3/7] 在线音乐（网易云）');
   await checkMusic();
-  console.log('[4/6] 在线音乐（QQ 音乐）');
+  console.log('[4/7] 在线音乐（QQ 音乐）');
   await checkQQMusic();
   checkProviders();
   checkCookieTools();
-  console.log('[5/6] 本地媒体服务');
+  console.log('[5/7] 音量同步（issue #2）');
+  try { checkVolumeSync(); } catch (err) { fail('音量同步', err); }
+  console.log('[6/7] 本地媒体服务');
   await checkMediaServer();
-  console.log('[6/6] 版本更新');
+  console.log('[7/7] 版本更新');
   try { await checkUpdater(); } catch (err) { fail('版本更新', err); }
 
   const bad = results.filter((r) => !r.ok);

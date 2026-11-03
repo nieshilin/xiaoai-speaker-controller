@@ -1,8 +1,21 @@
 'use strict';
 
+const http = require('http');
+
 module.exports = function runE2E(win, app) {
   const js = (code) => win.webContents.executeJavaScript(code, true);
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 模拟「手机 APP 改了音量」：只改云端设备状态，界面保持不动
+  function setDeviceVolume(v) {
+    const base = process.env.XIAOMI_MINA_BASE;
+    return new Promise((resolve) => {
+      http.get(`${base}/__control?volume=${v}`, (res) => {
+        res.resume();
+        res.on('end', resolve);
+      }).on('error', resolve);
+    });
+  }
 
   async function until(expr, timeout = 8000, step = 200) {
     const t0 = Date.now();
@@ -82,6 +95,23 @@ module.exports = function runE2E(win, app) {
       const volOk = await until(`document.getElementById('log').textContent.includes('设置音量 66')`);
       const volLabel = await js(`document.getElementById('volumeVal').textContent`);
       add('拖动音量 → 下发音量指令', volOk && volLabel === '66', `标签 ${volLabel}`);
+
+      // issue #2：手机 APP 改音量后，界面必须同步
+      await setDeviceVolume(67);
+      await wait(1600); // 越过拖动保护区，模拟用户离开滑块后再刷新
+      await js(`document.getElementById('btnStatusTop').click(); true`);
+      const refreshSynced = await until(`document.getElementById('volume').value === '67'`, 6000);
+      const refreshLabel = await js(`document.getElementById('volumeVal').textContent`);
+      const refreshLog = await js(`document.getElementById('log').textContent.includes('界面已同步')`);
+      add('手机端改音量 → 点刷新状态后界面同步（issue #2）',
+        refreshSynced && refreshLabel === '67' && refreshLog,
+        `滑块 ${await js(`document.getElementById('volume').value`)} · 标签 ${refreshLabel}`);
+
+      // 不点刷新也应能自动同步（8 秒轮询）
+      await setDeviceVolume(42);
+      const pollSynced = await until(`document.getElementById('volume').value === '42'`, 15000, 300);
+      add('手机端改音量 → 自动轮询同步到界面',
+        pollSynced, `滑块 ${await js(`document.getElementById('volume').value`)}`);
 
       await js(`(() => {
         document.getElementById('tts').value = '端到端测试播报';
