@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob:;" />
-  <title>小爱音箱控制台</title>
+  <title>Xiao Ai Speaker</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -24,7 +24,7 @@
           <rect x="14.5" y="34.4" width="12" height="3.2" rx="1.6" fill="#fff" opacity="0.6" />
         </svg>
         <div class="rail-brand-text">
-          <strong>小爱音箱控制台</strong>
+          <strong>Xiao Ai Speaker</strong>
           <span>MiNA Cloud</span>
         </div>
       </div>
@@ -185,10 +185,16 @@
             <div class="card qs-main-card">
               <div class="card-head">
                 <h2>今日推荐</h2>
-                <label class="check qs-check">
-                  <input type="checkbox" id="qsFallback" checked />
-                  汽水取不到完整音源时，用 QQ / 网易云的同名曲目播放
-                </label>
+                <div class="qs-head-opts">
+                  <label class="check qs-check">
+                    <input type="checkbox" id="qsAutoNext" checked />
+                    点歌自动连播下一首
+                  </label>
+                  <label class="check qs-check">
+                    <input type="checkbox" id="qsFallback" checked />
+                    汽水取不到完整音源时，用 QQ / 网易云的同名曲目播放
+                  </label>
+                </div>
               </div>
               <div class="qs-stage" id="qsStage">
                 <div class="qs-stage-empty">正在读取推荐…</div>
@@ -404,7 +410,7 @@
           <rect x="14.5" y="34.4" width="12" height="3.2" rx="1.6" fill="#fff" opacity="0.6" />
         </svg>
         <div class="about-title">
-          <h2 id="aboutTitle">小爱音箱控制台 <span id="aboutVersion">v2.4.3</span></h2>
+          <h2 id="aboutTitle">Xiao Ai Speaker <span id="aboutVersion">v2.4.3</span></h2>
           <p id="aboutDesc">云端 MiNA 通道 · 在线音乐与本地音乐</p>
         </div>
         <button class="btn ghost sm" id="btnAboutClose" type="button">关闭</button>

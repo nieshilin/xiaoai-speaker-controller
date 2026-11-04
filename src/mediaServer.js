@@ -18,6 +18,8 @@ const crypto = require('crypto');
 const MAX_BUFFER_BYTES = 96 * 1024 * 1024;
 const MAX_BUFFER_ITEMS = 6;
 const BUFFER_TTL_MS = 15 * 60 * 1000;
+/** 每 60s 主动清扫一次过期的解密缓冲（不再等下一次请求才顺手清） */
+const BUFFER_SWEEP_MS = 60 * 1000;
 
 const MIME = {
   '.mp3': 'audio/mpeg',
@@ -42,6 +44,7 @@ class MediaServer {
     this.resolvers = new Map(); // provider -> async (id) => { url, br } 或 { buffer, contentType }
     this.resolved = new Map(); // `${provider}:${id}` -> { url, br, at }
     this.buffers = new Map(); // `${provider}:${id}` -> { buffer, contentType, at }
+    this.bufferTimer = null;
     this.onLog = typeof onLog === 'function' ? onLog : () => {};
   }
 
@@ -70,6 +73,7 @@ class MediaServer {
       if (ok) {
         this.server = ok;
         this.port = port;
+        this._startBufferSweeper();
         this.log(`本地媒体服务已启动：0.0.0.0:${port}`);
         return port;
       }
@@ -240,6 +244,46 @@ class MediaServer {
     upstream.end();
   }
 
+  /** 启动/停止定时清扫：只在服务存活期间跑，避免定时器泄漏 */
+  _startBufferSweeper() {
+    if (this.bufferTimer) return;
+    this.bufferTimer = setInterval(() => this.sweepBuffers(), BUFFER_SWEEP_MS);
+    if (typeof this.bufferTimer.unref === 'function') this.bufferTimer.unref();
+  }
+
+  _stopBufferSweeper() {
+    if (!this.bufferTimer) return;
+    clearInterval(this.bufferTimer);
+    this.bufferTimer = null;
+  }
+
+  /** 删除已过期（超过 TTL 未被请求）的解密缓冲，返回释放的字节数 */
+  sweepBuffers() {
+    const now = Date.now();
+    let freed = 0;
+    for (const [key, entry] of this.buffers) {
+      if (now - entry.at > BUFFER_TTL_MS) {
+        freed += entry.buffer.length;
+        this.buffers.delete(key);
+      }
+    }
+    if (freed > 0) {
+      this.log(`已清理过期的解密缓存：${(freed / 1024 / 1024).toFixed(1)}MB（剩余 ${this.buffers.size} 首）`);
+    }
+    return freed;
+  }
+
+  /** 立刻释放全部解密缓冲（停止连播 / 退出时调用），返回释放的字节数 */
+  clearBuffers(reason) {
+    if (!this.buffers.size) return 0;
+    let freed = 0;
+    for (const entry of this.buffers.values()) freed += entry.buffer.length;
+    const count = this.buffers.size;
+    this.buffers.clear();
+    this.log(`已释放解密缓存 ${count} 首 / ${(freed / 1024 / 1024).toFixed(1)}MB${reason ? `（${reason}）` : ''}`);
+    return freed;
+  }
+
   /** 内存缓冲：过期即丢弃，按数量与总字节数双限淘汰最旧的 */
   _readBuffer(key) {
     const hit = this.buffers.get(key);
@@ -311,6 +355,8 @@ class MediaServer {
   }
 
   stop() {
+    this._stopBufferSweeper();
+    this.clearBuffers('媒体服务停止');
     if (this.server) {
       try { this.server.close(); } catch (_) { /* ignore */ }
       this.server = null;

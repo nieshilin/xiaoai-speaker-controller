@@ -806,6 +806,7 @@ li.empty {
 
 .qs-main-card { min-width: 0; }
 .qs-check { font-size: 11.5px; }
+.qs-head-opts { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 
 .qs-stage {
   display: grid;

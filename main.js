@@ -59,6 +59,8 @@ let loginWin = null;
 
 const cloud = { account: null, mina: null, devices: [], selected: null, qrAccount: null };
 const musicBox = { current: 'netease', cache: {} };
+// 汽水登录态实测结果：null=未检测 true=有效 false=已过期（probe 拿不到昵称）
+let qishuiSessionValid = null;
 const updateState = { result: null, checking: false, downloading: false };
 
 /* 歌单连播队列：按顺序解析音源 → 推给音箱 → 轮询状态等待播完 → 下一首 */
@@ -135,7 +137,7 @@ function updateRepo() {
 }
 
 const AUTHOR_BLOG = 'https://www.xiaonie.me/';
-const SHORTCUT_NAME = '小爱音箱控制台';
+const SHORTCUT_NAME = 'Xiao Ai Speaker';
 
 function updateApiBase() {
   return process.env.GITHUB_API_BASE || DEFAULT_API;
@@ -155,7 +157,7 @@ function openTrusted(target) {
 
 function appInfo() {
   return {
-    name: (pkg.build && pkg.build.productName) || '小爱音箱控制台',
+    name: (pkg.build && pkg.build.productName) || 'Xiao Ai Speaker',
     version: app.getVersion(),
     description: pkg.description || '',
     electron: process.versions.electron,
@@ -219,7 +221,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 640,
     backgroundColor: '#f6f6f7',
-    title: '小爱音箱控制台',
+    title: 'Xiao Ai Speaker',
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'build', 'icon.ico'),
     webPreferences: {
@@ -255,7 +257,7 @@ function createWindow() {
           );
           console.log('SMOKE_PROBE ' + probe);
           const st = JSON.parse(probe);
-          const okAll = st.hasApi && st.title.includes('小爱音箱') && st.buttons >= 12 && problems.length === 0;
+          const okAll = st.hasApi && (st.title.includes('Xiao Ai') || st.title.includes('小爱')) && st.buttons >= 12 && problems.length === 0;
           console.log(okAll ? 'SMOKE_OK' : 'SMOKE_FAIL ' + JSON.stringify(problems));
           app.exit(okAll ? 0 : 1);
         } catch (err) {
@@ -363,6 +365,8 @@ function saveMusicCookie(provider, cookie) {
   store.setAll({ [COOKIE_KEY[provider]]: cookie });
   if (provider === 'qishui') {
     try { qishuiAuth().setCookie(cookie); } catch (_) { /* 扫码桥未初始化时忽略 */ }
+    qishuiSessionValid = null; // 换了 Cookie 就重新校验
+    validateQishuiSession();
   }
 }
 
@@ -581,11 +585,44 @@ function musicStatus() {
           hasMedusa: !!inst.medusa,
           deviceId: inst.deviceId || '',
           fallback: fallbackEnabled(),
+          // 实测校验过会话已失效（probe 拿不到昵称），提示用户重新扫码
+          expired: inst.loggedIn && qishuiSessionValid === false,
+          trialHint: !!inst.trialHint,
         }
         : {}),
     };
   }
   return { current: musicBox.current, providers: out };
+}
+
+/** 实测校验汽水会话是否还有效（Cookie 过期时汽水不报错，只悄悄降级成试听，必须主动探测） */
+async function validateQishuiSession() {
+  const qs = musicOf('qishui');
+  if (!qs.cookie || !qs.loggedIn) { qishuiSessionValid = null; return null; }
+  try {
+    await qs.probe();
+    qishuiSessionValid = true;
+    if (qs.trialHint) {
+      qs.trialHint = false;
+    }
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    // 网络抖动不下「已过期」的结论，只有接口明确回绝（空响应/HTTP 4xx/读不到账号）才算
+    if (/socket|timeout|ETIMEDOUT|ECONN|ENOTFOUND|EAI_AGAIN|hang up|HTTP 5\d\d/i.test(msg)) {
+      qishuiSessionValid = null;
+    } else {
+      qishuiSessionValid = false;
+      log(`⚠ 汽水登录态已失效（${msg}），请到「汽水」页重新扫码登录`);
+      pushMusicStatus();
+    }
+  }
+  return qishuiSessionValid;
+}
+
+function pushMusicStatus() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('music:changed', musicStatus()); } catch (_) { /* 窗口已关 */ }
+  }
 }
 
 /* ---------- 歌单连播 ---------- */
@@ -713,27 +750,52 @@ async function stopQueue(waitMs = 6000) {
   while (playQueue.running && Date.now() < deadline) await sleep(200);
 }
 
-async function waitSongEnd(dev) {
+async function waitSongEnd(dev, song, startedAt = Date.now()) {
   // 音箱播放状态：1=播放中 2=暂停 0/-1=空闲。连续两次非播放态视为播完。
+  //
+  // 汽水/代理音源的坑：有些固件在拉加密转码流时状态回报会滞后甚至一直报 1/拿不到，
+  // 只靠状态轮询会让连播「停在当前这首不动」。所以再叠一层时长兜底：
+  // 知道曲目长度就按「时长 + 25s 容差」判定结束；状态长时间取不到也按超时放行。
+  const durationMs = Number(song && song.duration) || 0;
+  let deadline = durationMs > 0 ? startedAt + durationMs + 25000 : 0;
   let idle = 0;
+  let unknown = 0;
+  let pausedAt = 0;
   await sleep(4000); // 起播缓冲
   for (let i = 0; i < 3600; i++) {
     if (playQueue.stopFlag) return;
     // 用户点了暂停：不算播完，保持当前曲目等待恢复（否则会误判为空闲而跳下一首）
     if (playQueue.paused) {
       idle = 0;
+      if (!pausedAt) pausedAt = Date.now();
       await sleep(1000);
       continue;
+    }
+    // 恢复播放：暂停了多久就把时长兜底往后顺延多久
+    if (pausedAt) {
+      if (deadline) deadline += Date.now() - pausedAt;
+      pausedAt = 0;
+    }
+    if (deadline && Date.now() > deadline) {
+      log(`⏱ 按曲目时长判定「${song.name || ''}」播放结束（${Math.round(durationMs / 1000)}s）`);
+      return;
     }
     let s = null;
     try {
       const st = await cloud.mina.status(dev.id);
       s = st && typeof st.status === 'number' ? st.status : null;
     } catch (_) { /* 状态获取失败按继续等待处理 */ }
-    if (s === 1) idle = 0;
+    if (s === 1) { idle = 0; unknown = 0; }
     else if (s !== null) {
       idle += 1;
       if (idle >= 2) return;
+    } else {
+      // 状态一直取不到：既没时长兜底又超过约 3 分钟，就当作本首结束，别把队列卡死
+      unknown += 1;
+      if (!deadline && unknown >= 60) {
+        log(`⚠ 长时间取不到「${song.name || ''}」的播放状态，先继续下一首`);
+        return;
+      }
     }
     await sleep(3000);
   }
@@ -746,6 +808,7 @@ async function playQueueLoop(dev) {
   log(`▶ 开始连播「${playQueue.title}」（共 ${playQueue.items.length} 首）`);
   pushQueueState();
   let hinted = false;
+  let consecutiveFails = 0;
   try {
     while (!playQueue.stopFlag && playQueue.index < playQueue.items.length - 1) {
       playQueue.index += 1;
@@ -757,16 +820,30 @@ async function playQueueLoop(dev) {
         if (playQueue.stopFlag) break;
         const ok = await cloud.mina.playUrl(dev.id, url, dev.hardware);
         if (!ok) throw new Error('音箱拒绝播放该音源');
+        const startedAt = Date.now();
         log(`▶ 歌单 ${playQueue.index + 1}/${playQueue.items.length}：${song.name}${song.artists ? ` - ${song.artists}` : ''}${trial ? '（试听片段）' : ''}`);
+        if (trial && (song.provider || musicBox.current) === 'qishui') {
+          // 汽水对过期 Cookie 不报错，只悄悄降级成 29s 试听：在这里点破，别让用户猜
+          log('⚠ 汽水只给了试听片段：登录多半已过期或该曲需 VIP，建议重新扫码登录');
+          if (qishuiSessionValid !== false) validateQishuiSession();
+        }
         pushQueueState();
-        await waitSongEnd(dev);
+        await waitSongEnd(dev, song, startedAt);
+        consecutiveFails = 0;
       } catch (err) {
+        consecutiveFails += 1;
         log(`⚠ 跳过「${song.name}」：${err.message}`);
         if (!hinted) {
           hinted = true;
           if (/会员|VIP|权限|登录|Cookie|音源/i.test(err.message)) {
             log('提示：请检查音乐账号是否已登录，建议重新登录，并确认该账号有对应的 VIP 权益');
           }
+        }
+        // 连续取不到就刹车：与其静默跳完整张歌单，不如明确告诉用户哪里坏了
+        if (consecutiveFails >= 3) {
+          log(`✗ 连续 ${consecutiveFails} 首取不到可用音源，已停止连播（${err.message}）`);
+          if (/汽水|试听|登录/i.test(err.message)) log('提示：到「汽水」页重新扫码登录后，再点「播放全部」');
+          break;
         }
       }
     }
@@ -1118,7 +1195,9 @@ function registerIpc() {
       const cookie = qishuiAuth().getCookie();
       if (!cookie) throw new Error('扫码已确认，但没读到登录 Cookie，请刷新二维码重试');
       saveMusicCookie('qishui', cookie);
-      const profile = await musicOf('qishui').profile().catch(() => null);
+      const profile = await musicOf('qishui').profile()
+        .then((p) => { qishuiSessionValid = true; return p; })
+        .catch(() => { qishuiSessionValid = false; return null; });
       log(`✓ 汽水音乐登录成功${profile && profile.nickname ? `：${profile.nickname}` : ''}`);
       return { confirmed: true, ...musicStatus(), profile };
     }
@@ -1227,6 +1306,7 @@ function registerIpc() {
       name: s.name || '',
       artists: s.artists || '',
       provider: s.provider || musicBox.current,
+      duration: Number(s.duration) || 0,
     }));
     playQueue.index = start - 1;
     playQueue.title = title || '歌单';
@@ -1239,6 +1319,8 @@ function registerIpc() {
       playQueue.stopFlag = true;
       log('■ 收到停止连播指令');
     }
+    // 停止连播后音箱不再拉流，解密缓冲没有意义，立刻释放内存（不落盘、不残留）
+    if (media) media.clearBuffers('停止连播');
     return queueState();
   });
 
@@ -1288,6 +1370,37 @@ function registerIpc() {
 const isTestMode = ['--smoke', '--shot', '--e2e'].some((f) => process.argv.includes(f));
 if (isTestMode) app.setPath('userData', path.join(os.tmpdir(), `xiaoai-test-${Date.now()}`));
 
+/*
+ * 数据目录固定
+ * --------------------------------------------------------------
+ * 应用显示名（productName）从 XiaoAiSpeakerControl 改成了 Xiao Ai Speaker，
+ * 而 Electron 默认用 productName 取 userData 目录 —— 直接升级会变成「空目录」，
+ * 账号登录态、汽水 Cookie、设置全像丢了一样。这里显式钉回老目录，
+ * 并把新目录里可能已写入的数据迁回来，保证改名不影响已登录用户。
+ */
+(function pinUserData() {
+  if (isTestMode) return;
+  const OLD_DIR_NAME = 'xiaomi-speaker-controller'; // package.json 的 name，一直没改
+  const appData = app.getPath('appData');
+  const legacy = path.join(appData, OLD_DIR_NAME);
+  const current = app.getPath('userData');
+  if (path.resolve(legacy) === path.resolve(current)) return;
+  const hasData = (dir) => {
+    try { return fs.existsSync(path.join(dir, 'config.json')); } catch (_) { return false; }
+  };
+  if (!hasData(legacy) && hasData(current)) return; // 新目录已经是主数据目录，别动
+  try {
+    // 老目录为空、新目录有数据：先把新数据搬过去，再钉到老目录
+    if (!hasData(legacy) && fs.existsSync(current) && !fs.existsSync(path.join(legacy, 'Cache'))) {
+      fs.mkdirSync(legacy, { recursive: true });
+      for (const name of fs.readdirSync(current)) {
+        fs.renameSync(path.join(current, name), path.join(legacy, name));
+      }
+    }
+  } catch (_) { /* 迁移失败就保持默认目录，至少不影响启动 */ }
+  app.setPath('userData', legacy);
+})();
+
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   store = new Store(app.getPath('userData'));
@@ -1299,6 +1412,8 @@ app.whenReady().then(() => {
     if (qishuiCookie && qishuiCookie !== stored) saveMusicCookie('qishui', qishuiCookie);
     else if (!qishuiCookie && stored) qishuiAuth().setCookie(stored);
   } catch (_) { /* 登录态读取失败不影响启动 */ }
+  // 启动时实测一次汽水会话：Cookie 过期是汽水「不能播」的头号原因，早发现早提示
+  setTimeout(() => { validateQishuiSession().catch(() => {}); }, 2000);
   media = new MediaServer({ port: 8931, onLog: log });
   media.registerResolver('qq', (mid) => musicOf('qq').songUrl(mid));
   media.registerResolver('netease', (sid) => musicOf('netease').songUrl(sid));

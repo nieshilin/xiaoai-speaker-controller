@@ -436,13 +436,15 @@
     const info = state.music.qishui || {};
     const badge = $('#qsLoginBadge');
     if (badge) {
-      const text = info.ready
-        ? '已登录 · 完整音源'
-        : info.loggedIn
-          ? '已登录 · 缺签名头'
-          : '未登录 · 推荐仍可看';
+      const text = info.expired
+        ? '登录已过期 · 请重新扫码'
+        : info.ready
+          ? '已登录 · 完整音源'
+          : info.loggedIn
+            ? '已登录 · 缺签名头'
+            : '未登录 · 推荐仍可看';
       badge.textContent = text;
-      if (text.includes('已登录 · 完整音源') || text.includes('未登录')) badge.classList.remove('warn');
+      if (text === '已登录 · 完整音源' || text === '未登录 · 推荐仍可看') badge.classList.remove('warn');
       else badge.classList.add('warn');
     }
     const box = $('#qsFallback');
@@ -812,7 +814,11 @@
 
   /* ---------- 汽水音乐独立界面 ---------- */
 
-  const qs = { songs: [], cursor: 0, hasMore: true, loading: false, seen: [], playing: '', focus: 0, pl: [], plSongs: [] };
+  const qs = {
+    songs: [], cursor: 0, hasMore: true, loading: false, seen: [], playing: '', focus: 0, pl: [], plSongs: [],
+    // 点歌默认从这首开始排队连播；关掉后点歌只播单曲
+    autoNext: localStorage.getItem('qsAutoNext') !== 'off',
+  };
 
   function fmtDuration(ms) {
     const total = Math.round((Number(ms) || 0) / 1000);
@@ -869,7 +875,7 @@
     play.type = 'button';
     play.className = 'btn primary';
     play.textContent = '▶ 播放这首';
-    play.onclick = () => qsPlay(song);
+    play.onclick = () => qsPlay(song, qs.songs, index);
     const next = document.createElement('button');
     next.type = 'button';
     next.className = 'btn ghost sm';
@@ -923,7 +929,7 @@
 
       li.appendChild(num);
       li.appendChild(main);
-      li.onclick = () => { qs.focus = i; renderQishuiStage(); qsPlay(song); };
+      li.onclick = () => { qs.focus = i; renderQishuiStage(); qsPlay(song, qs.songs, i); };
       ul.appendChild(li);
     });
     if (qs.hasMore && qs.songs.length) {
@@ -1052,8 +1058,29 @@
     paintQsPlayMark();
   }
 
-  async function qsPlay(song) {
+  async function qsPlay(song, list, index) {
     if (!state.connected) { toast('先扫码登录小米账号并选择音箱', 'err'); return; }
+    // 带列表时按「从这一首开始排队」下发，播完自动接下一首；关掉自动连播才退回单曲播放
+    const queue = Array.isArray(list) && list.length ? list : null;
+    const at = queue ? Math.max(0, Math.min(Number(index) || 0, queue.length - 1)) : 0;
+    if (queue && qs.autoNext) {
+      qs.playing = song.id;
+      paintQsPlayMark();
+      paintQsNow(song, '正在解析音源…');
+      $('#qsPlayTag').textContent = `连播 ${at + 1}/${queue.length}`;
+      const r = await run('播放', () => api.queuePlay('汽水推荐', queue.map((s) => ({ ...s, provider: 'qishui' })), at), { hint: LOGIN_HINT });
+      if (!r) {
+        qs.playing = '';
+        paintQsPlayMark();
+        paintQsNow(null);
+        $('#qsPlayTag').textContent = '待机';
+        const info = state.music.qishui || {};
+        if (!info.loggedIn) addLog('提示：汽水未登录，点「扫码登录」后再试，或在下方开启同名曲兜底', 'err');
+        return;
+      }
+      toast(`从「${song.name}」开始连播，共 ${queue.length} 首`, 'ok', 2600);
+      return;
+    }
     qs.playing = song.id;
     paintQsPlayMark();
     paintQsNow(song, '正在解析音源…');
@@ -1127,11 +1154,11 @@
       const play = document.createElement('button');
       play.className = 'btn ghost sm';
       play.textContent = '播放';
-      play.onclick = (e) => { e.stopPropagation(); qsPlay(song); };
+      play.onclick = (e) => { e.stopPropagation(); qsPlay(song, songs, i); };
       li.appendChild(num);
       li.appendChild(main);
       li.appendChild(play);
-      li.onclick = () => qsPlay(song);
+      li.onclick = () => qsPlay(song, songs, i);
       box.appendChild(li);
     });
   }
@@ -1489,6 +1516,8 @@
       if (pl.id) await loadPlSongs(pl.id);
     };
     api.onQueueProgress(applyQueueState);
+    // 主进程实测汽水会话失效时主动推送，徽标立刻变红，不用等下一次操作
+    if (api.onMusicChanged) api.onMusicChanged((st) => { if (st) applyMusicState(st); });
 
     /* 汽水独立界面 */
     $('#btnQsRefresh').onclick = () => loadQishuiFeed({ refresh: true });
@@ -1500,6 +1529,12 @@
     $('#qsQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') qsSearch(); });
     $('#btnQsPlLoad').onclick = () => loadQsPlaylists(true);
     $('#qsPlSelect').onchange = () => loadQsPlSongs($('#qsPlSelect').value);
+    $('#qsAutoNext').checked = qs.autoNext;
+    $('#qsAutoNext').onchange = (e) => {
+      qs.autoNext = !!e.target.checked;
+      localStorage.setItem('qsAutoNext', qs.autoNext ? 'on' : 'off');
+      toast(qs.autoNext ? '点歌将自动连播后面的推荐' : '点歌只播这一首', 'ok', 2400);
+    };
     $('#qsFallback').onchange = async (e) => {
       const st = await run('切换同名曲兜底', () => api.setQishuiFallback(!!e.target.checked));
       if (!st) { e.target.checked = !e.target.checked; return; }

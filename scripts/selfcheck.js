@@ -908,6 +908,26 @@ async function checkMediaServer() {
       && resolveCalls === 1;
     if (bufOk) ok('内存解密音源代理（不落盘 · Range · 缓存命中）', `resolver 调用 ${resolveCalls} 次`);
     else fail('内存缓冲代理', new Error(JSON.stringify({ status: whole.status, piece: piece.status, resolveCalls })));
+
+    // 过期缓存要能被主动清扫，而不是等下一次请求才顺手删
+    const key = [...ms.buffers.keys()][0];
+    ms.buffers.get(key).at = Date.now() - 16 * 60 * 1000;
+    const freed = ms.sweepBuffers();
+    if (freed === plain.length && ms.buffers.size === 0) {
+      ok('过期解密缓存自动清扫（不依赖下一次请求）', `释放 ${freed} 字节`);
+    } else {
+      fail('过期缓存清扫', new Error(JSON.stringify({ freed, size: ms.buffers.size })));
+    }
+
+    // 停止连播要能立刻把内存里的解密音频还回去
+    await bufGet();
+    const beforeClear = ms.buffers.size;
+    const cleared = ms.clearBuffers('自检');
+    if (beforeClear === 1 && cleared === plain.length && ms.buffers.size === 0) {
+      ok('停止连播立即释放解密缓存', `释放 ${(cleared / 1024).toFixed(0)}KB`);
+    } else {
+      fail('立即释放缓存', new Error(JSON.stringify({ beforeClear, cleared, size: ms.buffers.size })));
+    }
   } catch (err) {
     fail('媒体服务', err);
   } finally {
@@ -1055,7 +1075,7 @@ async function checkUpdater() {
 }
 
 (async () => {
-  console.log('小爱音箱控制台 · 自检\n');
+  console.log('Xiao Ai Speaker · 自检\n');
   console.log('[1/9] 语法');
   try { checkSyntax(); } catch (err) { fail('语法检查', err); }
   console.log('[2/9] MiNA 云端通道');

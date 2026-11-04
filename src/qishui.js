@@ -249,6 +249,7 @@ class QishuiMusic {
     this.setCookie(cookie);
     this.setKeys({ helios, medusa, deviceId, fp });
     this._playerCache = new Map(); // id -> { picked, at }：取流结果短时复用，避免重复请求
+    this.trialHint = false; // 有 Cookie 却只给试听 → 大概率登录过期
   }
 
   /** 取流结果缓存：同一首歌在「解析」和「代理取流」两个环节会各查一次 */
@@ -637,6 +638,9 @@ class QishuiMusic {
         encrypted: !!mp.encrypted,
         decryptKey,
       };
+      // 带着含 sessionid 的 Cookie 却只拿到 29s 单档试听：多半是 Cookie 已过期
+      // （汽水对失效会话不报错，只悄悄降级成未登录试听），上层据此提示重新扫码
+      if (mp.trial && this.loggedIn) this.trialHint = true;
       this._cachePlayer(tid, picked);
       return picked;
     }

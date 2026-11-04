@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld('api', {
   search: (keywords, provider) => ipcRenderer.invoke('music:search', { keywords, provider }),
   playSong: (song) => ipcRenderer.invoke('music:play', song),
   musicState: () => ipcRenderer.invoke('music:state'),
+  onMusicChanged: (cb) => {
+    const listener = (_e, st) => { try { cb(st); } catch (_) { /* 回调异常不影响主流程 */ } };
+    ipcRenderer.on('music:changed', listener);
+    return () => ipcRenderer.removeListener('music:changed', listener);
+  },
   setProvider: (provider) => ipcRenderer.invoke('music:provider', { provider }),
   musicLogin: (provider) => ipcRenderer.invoke('music:login', { provider }),
   musicLogout: (provider) => ipcRenderer.invoke('music:logout', { provider }),
