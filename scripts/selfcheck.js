@@ -167,7 +167,7 @@ async function checkQrLogin() {
       return { status: 200, body: JSON.stringify({ lp: 'https://account.xiaomi.com/lp/1', qr: 'https://account.xiaomi.com/qr/1.png', timeout: 300 }), cookies: {} };
     }
     if (u.pathname === '/qr/1.png') {
-      return { status: 200, headers: { 'content-type': 'image/png' }, buffer: Buffer.from('PNGDATA'), body: '', cookies: {} };
+      return { status: 200, headers: { 'content-type': 'image/png' }, buffer: Buffer.alloc(512, 7), body: '', cookies: {} };
     }
     if (u.pathname === '/lp/1') {
       return { status: 200, body: '&&&START&&&{"code":0,"userId":42,"passToken":"PT","nonce":1234567890123456789,"ssecurity":"SSEC","location":"https://api2.mina.mi.com/sts?d=D1&ticket=0"}', cookies: {} };
@@ -186,6 +186,22 @@ async function checkQrLogin() {
   const image = await account.qrImage(start.qr);
   if (!image.startsWith('data:image/png;base64,')) throw new Error('二维码未转成 data URL');
   ok('获取登录二维码', `${image.length} 字节`);
+
+  // 小米偶发返回 HTML/JSON（风控、接口调整），必须报出真实内容而不是塞给 <img> 变成空白
+  const badAcc = new MiAccount({
+    transport: async (url) => {
+      const u = new URL(url);
+      if (u.pathname === '/longPolling/loginUrl') {
+        return { status: 200, body: JSON.stringify({ lp: 'https://x/lp', qr: 'https://x/qr', timeout: 300 }), cookies: {} };
+      }
+      return { status: 200, headers: { 'content-type': 'text/html' }, buffer: Buffer.from('<html>captcha</html>'), body: '', cookies: {} };
+    },
+  });
+  await badAcc.qrStart('micoapi');
+  let rejected = '';
+  try { await badAcc.qrImage('https://x/qr'); } catch (e) { rejected = e.message; }
+  if (!/而不是图片/.test(rejected)) throw new Error(`非图片二维码返回未被拦截：${rejected || '没有报错'}`);
+  ok('二维码非图片返回被拦截', rejected.slice(0, 40));
 
   const token = await account.qrWait({ deadlineMs: 5000 });
   if (!token.micoapi || token.micoapi.serviceToken !== 'STOKEN-QR') throw new Error('扫码后未拿到 serviceToken');
@@ -418,6 +434,13 @@ function checkCookieTools() {
     if (normalizeCookie('qq', 'qm_keyst=ABCDEFGH').ok) throw new Error('缺少 uin 时应报错');
     if (!normalizeCookie('netease', 'MUSIC_U=' + 'x'.repeat(40)).ok) throw new Error('网易云合法 Cookie 被拒绝');
     if (normalizeCookie('netease', 'foo=bar').ok) throw new Error('网易云缺 MUSIC_U 时应报错');
+    // issue #3：单行 input 会把多行 Cookie 的换行吞成空格，必须逐对提取
+    const MU = 'A'.repeat(32);
+    const rows = ['_iuqxldmzr_=32', '_ntes_nuid=xyz789', '__csrf=csrfTOKEN01', 'MUSIC_U=' + MU, 'JSESSIONID-WYYY=jsess1'];
+    for (const sep of ['; ', '\n', ' ']) {
+      const r = normalizeCookie('netease', rows.join(sep));
+      if (!r.ok || !r.cookie.includes('MUSIC_U=' + MU)) throw new Error(`Cookie 分隔符 "${sep.replace('\n', '\\n')}" 粘贴解析失败`);
+    }
 
     if (!qqAuth('uin=o0123456789; qm_keyst=ABCDEFGH').hasPlayback) throw new Error('qqAuth 未识别播放凭证');
     if (qqAuth('uin=o0123456789; p_skey=x').hasPlayback) throw new Error('只有 p_skey 时不应判定可播放');

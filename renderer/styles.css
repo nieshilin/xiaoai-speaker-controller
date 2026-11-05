@@ -450,6 +450,7 @@ li.empty {
 }
 
 .qr-box img { width: 148px; height: 148px; border-radius: 10px; background: #fff; object-fit: contain; }
+.qr-side { flex: 1; min-width: 0; }
 .qr-side strong { display: block; font-size: 13px; margin-bottom: 6px; }
 .qr-side p { margin: 0 0 10px; }
 
@@ -660,7 +661,10 @@ li.empty {
   margin: 18px 0 6px;
 }
 
-.qr-box {
+/* 注意：作用域限定在 .qr-body（汽水扫码弹窗）内。
+   不能用裸 .qr-box —— 会覆盖上方米家登录的内嵌扫码框（208px 白底 + img opacity:0
+   导致米家二维码「加载成功也看不见」、右侧文字被挤成一字一行）。 */
+.qr-body .qr-box {
   flex: none;
   width: 208px;
   height: 208px;
@@ -674,7 +678,7 @@ li.empty {
   justify-content: center;
 }
 
-.qr-box img {
+.qr-body .qr-box img {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -684,7 +688,7 @@ li.empty {
   transition: opacity 0.18s ease;
 }
 
-.qr-box img.ready { opacity: 1; }
+.qr-body .qr-box img.ready { opacity: 1; }
 
 .qr-steps {
   margin: 0;

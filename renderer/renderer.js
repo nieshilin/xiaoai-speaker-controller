@@ -147,6 +147,10 @@
       return;
     }
     $('#qrImg').src = started.image;
+    $('#qrImg').onerror = () => {
+      addLog('⚠ 二维码图片加载失败：小米返回了异常内容。请点「扫码登录」重试；连续失败请检查网络或代理软件');
+      toast('二维码加载失败，请重试', 'err');
+    };
     addLog('已生成登录二维码（5 分钟内有效）');
 
     const off = api.onQr((payload) => {

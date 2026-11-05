@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/icon.png" width="128" alt="小爱音箱控制台图标" />
+<img src="docs/icon.png" width="128" alt="Xiao Ai Speaker 图标" />
 
-# 小爱音箱控制台
+# Xiao Ai Speaker
 
 **Windows 桌面端的小爱音箱遥控器 · Electron + JavaScript**
 

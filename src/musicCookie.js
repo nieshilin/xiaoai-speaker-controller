@@ -44,19 +44,43 @@ const QQ_PLAYBACK_KEYS = ['qm_keyst', 'qqmusic_key', 'music_key', 'wxskey'];
 const QQ_UIN_KEYS = ['uin', 'qqmusic_uin', 'wxuin', 'p_uin', 'pt2gguin'];
 const MAX_HEADER = 8000;
 
-function parseCookieHeader(text) {
+function collectBySplit(s) {
   const out = {};
-  for (const part of String(text || '').split(';')) {
+  for (const part of s.split(/[;\r\n]+/)) {
     const raw = part.trim();
     if (!raw) continue;
     const idx = raw.indexOf('=');
     if (idx <= 0) continue;
     const name = raw.slice(0, idx).trim();
     const value = raw.slice(idx + 1).trim();
-    if (!name || !value) continue;
-    out[name] = value;
+    if (name && value) out[name] = value;
   }
   return out;
+}
+
+function collectByRegex(s) {
+  const out = {};
+  const re = /([^\s;=]+)\s*=\s*("[^"]*"|[^;\s]+)/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const name = m[1].trim();
+    let value = m[2].trim();
+    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+    if (name && value) out[name] = value;
+  }
+  return out;
+}
+
+function parseCookieHeader(text) {
+  const s = String(text || '');
+  if (!s) return {};
+  // 两种策略都试，取解析出字段更多的一份：
+  // - split：标准 Cookie 形态（分号 / 换行分隔），能保留含空格的值
+  // - regex：单行 input 把多行 Cookie 的换行吞成空格后变成 "a=1 b=2 c=3"，
+  //   split 只会拿到第一个对，必须逐对正则提取
+  const a = collectBySplit(s);
+  const b = collectByRegex(s);
+  return Object.keys(b).length > Object.keys(a).length ? b : a;
 }
 
 function digitsOf(value) {
@@ -184,7 +208,10 @@ function normalizeCookie(provider, raw) {
   }
 
   if (!neteaseAuth(cookie).hasLogin) {
-    return { ok: false, cookie, reason: '网易云 Cookie 缺少 MUSIC_U 字段，请确认已在浏览器登录 music.163.com' };
+    const hint = names.length
+      ? `已识别到 ${names.length} 个字段但缺少 MUSIC_U（识别到的如：${names.slice(0, 4).join('、')}）。请确认复制的是 music.163.com 已登录域下的 Cookie`
+      : '网易云 Cookie 缺少 MUSIC_U 字段，请确认已在浏览器登录 music.163.com';
+    return { ok: false, cookie, reason: hint };
   }
   return { ok: true, cookie, reason: '' };
 }

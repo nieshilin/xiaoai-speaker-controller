@@ -162,8 +162,15 @@ class MiAccount {
   async qrImage(url) {
     const r = await this._http(url, { headers: { 'User-Agent': UA_LOGIN }, raw: true, timeout: 20000 });
     const buf = Buffer.isBuffer(r.buffer) ? r.buffer : Buffer.from(String(r.body || ''), 'binary');
-    if (!buf || !buf.length) throw new Error('二维码图片为空');
     const type = String((r.headers && r.headers['content-type']) || 'image/png').split(';')[0];
+    // 小米偶尔会返回 HTML/JSON（风控、接口调整），不校验就会把坏内容塞给 <img>，
+    // 界面上表现为「二维码空白但一直等待扫码」。这里直接报出真实返回内容。
+    if (!buf || !buf.length) throw new Error('二维码图片为空');
+    if (!/^image\//i.test(type)) {
+      const head = buf.subarray(0, 120).toString('utf8').replace(/\s+/g, ' ').trim();
+      throw new Error(`二维码接口返回了 ${type} 而不是图片（前 120 字节：${head}），可能是小米风控或接口调整`);
+    }
+    if (buf.length < 100) throw new Error(`二维码图片过小（${buf.length} 字节），疑似接口异常`);
     return `data:${type};base64,${buf.toString('base64')}`;
   }
 
@@ -201,7 +208,7 @@ class MiAccount {
       this.log('二维码已过期，正在刷新…');
       const next = await this.qrStart(sid);
       if (typeof onQr === 'function') {
-        try { onQr(await this.qrImage(next.qr)); } catch (_) { /* ignore */ }
+        try { onQr(await this.qrImage(next.qr)); } catch (e) { this.log(`⚠ 刷新二维码图片失败：${e.message}`); }
       }
     }
 
